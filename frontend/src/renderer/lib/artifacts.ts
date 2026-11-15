@@ -43,6 +43,11 @@ export type ArtifactRow = {
 	 * invited, or anyone. Unset while not known.
 	 */
 	shareAccess?: CloudShareAccess;
+	/**
+	 * Set on a row from an archived session. Its files are view only: they can
+	 * be previewed, shared, downloaded or deleted, not edited or sent feedback.
+	 */
+	archived?: boolean;
 };
 
 /**
@@ -88,10 +93,11 @@ export type ArtifactGroup = {
 };
 
 /**
- * Groups the listed artifacts of live local and cloud sessions by project,
+ * Groups the listed artifacts of local and cloud sessions by project,
  * orchestrators included: they get the same artifact directory and listing rule
- * as workers. Remote-host projects, archived sessions and projects without
- * artifacts are left out; rows sort newest first and groups by their newest
+ * as workers. An archived session's rows are kept, marked archived: artifacts
+ * are deleted only when the person deletes them. Remote-host projects and
+ * projects without artifacts are left out; rows sort newest first and groups by their newest
  * row. An orchestrator's rows carry `orchestratorTitle` as their session title
  * when given, since its own title is only its session ID.
  */
@@ -101,7 +107,6 @@ export function groupArtifactsByProject(workspaces: readonly WorkspaceSummary[],
 		if (workspace.hostId) continue;
 		const isScratchpad = workspace.id === STANDALONE_WORKSPACE_ID;
 		const rows = workspace.sessions
-			.filter((session) => !isArchivedSession(session))
 			.flatMap((session) =>
 				sessionDeliverables(session).map((artifact): ArtifactRow => ({
 					...(artifact.id ? { id: artifact.id } : {}),
@@ -120,6 +125,7 @@ export function groupArtifactsByProject(workspaces: readonly WorkspaceSummary[],
 					...(artifact.shareUrl ? { shareUrl: artifact.shareUrl } : {}),
 					...(artifact.shareUrl && artifact.shareAccess ? { shareAccess: artifact.shareAccess } : {}),
 					...(artifact.sha256 ? { sha256: artifact.sha256 } : {}),
+					...(isArchivedSession(session) ? { archived: true } : {}),
 				})),
 			)
 			.sort(newestFirst);
