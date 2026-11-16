@@ -35,6 +35,13 @@
 
 One coding agent can handle a task. Running several means splitting the work, keeping branches from colliding, and following every change through CI, review, and merge. Orchestrator.inc is a local desktop workspace for that: every task gets its own agent, branch, and worktree, and your code stays on your machine.
 
+## Fork additions
+
+[Project teams](docs/team-workflow.md) adds mission chiefs, custom agent roles,
+orchestrator signoff, Python-managed persistent mail, and llmwiki/datashard
+integration. Run `python scripts/team-dev.py` for the local browser GUI after
+installing the prerequisites in that guide.
+
 ## Features
 
 ### The orchestrator runs the fleet

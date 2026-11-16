@@ -54,6 +54,7 @@ type APIDeps struct {
 	Reviews            reviewsvc.Manager
 	Notifications      controllers.NotificationService
 	Reports            controllers.ReportService
+	Team               controllers.TeamService
 	NotificationStream controllers.NotificationStream
 	Push               controllers.PushRegistry
 	Import             controllers.ImportService
@@ -169,6 +170,7 @@ type API struct {
 	reviews       *controllers.ReviewsController
 	notifications *controllers.NotificationsController
 	reports       *controllers.ReportsController
+	team          *controllers.TeamController
 	push          *controllers.PushController
 	imports       *controllers.ImportController
 	sessionImport *controllers.SessionImportController
@@ -238,6 +240,7 @@ func newAPIWithLogger(cfg config.Config, deps APIDeps, log *slog.Logger) *API {
 		reviews:       &controllers.ReviewsController{Svc: deps.Reviews},
 		notifications: &controllers.NotificationsController{Svc: deps.Notifications, Stream: deps.NotificationStream},
 		reports:       &controllers.ReportsController{Svc: deps.Reports},
+		team:          &controllers.TeamController{Svc: deps.Team},
 		push:          &controllers.PushController{Registry: deps.Push, Devices: deps.AccessDevices},
 		imports:       &controllers.ImportController{Svc: deps.Import},
 		sessionImport: &controllers.SessionImportController{Svc: deps.SessionImport},
@@ -389,6 +392,7 @@ func (a *API) Register(root chi.Router) {
 			a.reviews.Register(r)
 			a.notifications.Register(r)
 			a.reports.Register(r)
+			a.team.Register(r)
 			a.push.Register(r)
 			a.imports.Register(r)
 			a.sessionImport.Register(r)

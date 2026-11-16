@@ -582,6 +582,11 @@ var schemaNames = map[string]string{ //nolint:gosec // Public OpenAPI type names
 	"ControllersCreateReportRequest":              "CreateReportRequest",
 	"ControllersReportOutputRequest":              "ReportOutputRequest",
 	"ControllersCreateReportResponse":             "CreateReportResponse",
+	"ControllersTeamRequest":                      "TeamRequest",
+	"ControllersTeamResponse":                     "TeamResponse",
+	"ControllersTeamProjectParam":                 "TeamProjectParam",
+	"ControllersTeamHookRequest":                  "TeamHookRequest",
+	"ControllersTeamHookSessionParam":             "TeamHookSessionParam",
 	"ControllersReportOutputResponse":             "ReportOutputResponse",
 	"ControllersReportResponse":                   "ReportResponse",
 	"ControllersListReportsResponse":              "ListReportsResponse",
@@ -836,6 +841,7 @@ func operations() []operation {
 	ops = append(ops, reviewOperations()...)
 	ops = append(ops, notificationOperations()...)
 	ops = append(ops, reportOperations()...)
+	ops = append(ops, teamOperations()...)
 	ops = append(ops, usageOperations()...)
 	ops = append(ops, pushOperations()...)
 	ops = append(ops, importOperations()...)

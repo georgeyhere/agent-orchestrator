@@ -427,10 +427,12 @@ type conversationSettingsStore interface {
 // Manager coordinates internal session spawn, restore, kill, and cleanup over
 // the outbound ports. User-facing read-model assembly lives in the service package.
 type Manager struct {
-	runtime   runtimeController
-	agents    ports.AgentResolver
-	workspace ports.Workspace
-	store     Store
+	teamInstructionsMu sync.RWMutex
+	teamInstructions   func(context.Context, domain.ProjectID, domain.SessionID) (string, error)
+	runtime            runtimeController
+	agents             ports.AgentResolver
+	workspace          ports.Workspace
+	store              Store
 	// forkSeeds copies a fork source's files into the fork's worktree.
 	forkSeeds forkSeedApplier
 	// claudeSessionFork copies a Claude session into a fork's worktree. It is
@@ -6445,6 +6447,18 @@ func (m *Manager) buildSystemPrompt(ctx context.Context, kind domain.SessionKind
 		Standalone: projectID == "",
 		Project:    promptProjectContext(projectID, project),
 	}
+	m.teamInstructionsMu.RLock()
+	teamInstructions := m.teamInstructions
+	m.teamInstructionsMu.RUnlock()
+	if teamInstructions != nil && projectID != "" {
+		instructions, err := teamInstructions(ctx, projectID, sessionID)
+		if err != nil {
+			return "", fmt.Errorf("load project team role: %w", err)
+		}
+		if instructions != "" {
+			cfg.AdditionalSections = append(cfg.AdditionalSections, instructions)
+		}
+	}
 
 	switch kind {
 	case domain.KindOrchestrator:
@@ -6811,6 +6825,9 @@ func (m *Manager) chatPreflightEnv(cfg ports.SpawnConfig, projectEnv map[string]
 func (m *Manager) runtimeEnvChecked(id domain.SessionID, project domain.ProjectID, issue domain.IssueID, projectEnv map[string]string, accountID string, harness domain.AgentHarness) (map[string]string, error) {
 	caseInsensitive := envKeysCaseInsensitive
 	env := spawnEnvForOS(id, project, issue, m.dataDir, projectEnv, caseInsensitive)
+	if err := m.applyTeamEnv(id, project, env); err != nil {
+		return env, fmt.Errorf("load team session environment: %w", err)
+	}
 	if m.dataDir != "" {
 		overridden := func(key string) bool {
 			for configured := range projectEnv {

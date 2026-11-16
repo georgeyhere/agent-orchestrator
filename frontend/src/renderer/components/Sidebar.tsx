@@ -544,6 +544,7 @@ function useSelection() {
 	});
 	const goHome = useCallback(() => void navigate({ to: "/" }), [navigate]);
 	const goAutomations = useCallback(() => void navigate({ to: "/automations" }), [navigate]);
+	const goTeams = useCallback(() => void navigate({ to: "/teams" }), [navigate]);
 	const goArtifacts = useCallback(() => void navigate({ to: "/artifacts" }), [navigate]);
 	const goUsage = useCallback(() => void navigate({ to: "/usage" }), [navigate]);
 	const goStandaloneBoard = useCallback(() => void navigate({ to: "/sessions" }), [navigate]);
@@ -571,6 +572,7 @@ function useSelection() {
 	return useMemo(() => ({
 		isHome: pathname === "/",
 		isAutomations: pathname === "/automations",
+		isTeams: pathname === "/teams",
 		isArtifacts: pathname === "/artifacts",
 		isUsage: pathname === "/usage",
 		activeRemoteHostId: params.hostId,
@@ -580,6 +582,7 @@ function useSelection() {
 		activeSessionId: params.hostId ? undefined : params.sessionId,
 		goHome,
 		goAutomations,
+		goTeams,
 		goArtifacts,
 		goUsage,
 		goStandaloneBoard,
@@ -590,7 +593,7 @@ function useSelection() {
 		goSettings,
 		goProject,
 		goSession,
-	}), [goArtifacts, goAutomations, goUsage, goConnectMobile, goGlobalSettings, goHome, goProject, goSession, goSettings, goStandaloneBoard, params.hostId, params.projectId, params.sessionId, pathname]);
+	}), [goArtifacts, goAutomations, goTeams, goUsage, goConnectMobile, goGlobalSettings, goHome, goProject, goSession, goSettings, goStandaloneBoard, params.hostId, params.projectId, params.sessionId, pathname]);
 }
 
 // Rows showing the red alert sit above the rest, but only in the default
@@ -1153,6 +1156,9 @@ export const Sidebar = memo(function Sidebar({
 					</SidebarGroup>
 				) : null}
 				<SidebarMenu className="mb-3 gap-0.5 group-data-[collapsible=icon]:gap-1">
+					<SidebarMenuItem>
+						<SidebarTopNavRow active={selection.isTeams} icon={<LayoutGrid aria-hidden="true" />} label="Project teams" onClick={selection.goTeams} tooltip={isCollapsed ? "Project teams" : undefined} />
+					</SidebarMenuItem>
 					<SidebarMenuItem>
 						<SidebarTopNavRow
 							active={selection.isAutomations}

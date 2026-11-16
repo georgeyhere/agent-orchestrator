@@ -214,7 +214,7 @@ func sessionHookFlags(t *testing.T) []string {
 		executable = `'` + strings.ReplaceAll(executable, `'`, `'"'"'`) + `'`
 	}
 	prefix := executable + " hooks codex "
-	return []string{
+	flags := []string{
 		"-c", `hooks.SessionStart=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"session-start") + `,timeout=5}]}]`,
 		"-c", `hooks.UserPromptSubmit=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"user-prompt-submit") + `,timeout=5}]}]`,
 		"-c", `hooks.PermissionRequest=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"permission-request") + `,timeout=5}]}]`,
@@ -223,6 +223,16 @@ func sessionHookFlags(t *testing.T) []string {
 		"-c", `hooks.SubagentStop=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"subagent-stop") + `,timeout=5}]}]`,
 		"-c", `hooks.Stop=[{hooks=[{type="command",command=` + codexTOMLBasicString(prefix+"stop") + `,timeout=5}]}]`,
 	}
+	for index := 1; index < len(flags); index += 2 {
+		event := strings.SplitN(strings.TrimPrefix(flags[index], "hooks."), "=", 2)[0]
+		switch event {
+		case "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop":
+			command := executable + " team hook " + event
+			flags[index] = strings.TrimSuffix(flags[index], "]") + `,{hooks=[{type="command",command=` + codexTOMLBasicString(command) + `,timeout=30}]}]`
+		}
+	}
+	return flags
+
 }
 
 func TestExitDetectionUsesAOProcessSupervisor(t *testing.T) {

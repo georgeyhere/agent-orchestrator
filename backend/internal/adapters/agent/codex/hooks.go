@@ -112,8 +112,33 @@ func appendSessionHookFlagsForExecutable(cmd *[]string, executable string) {
 		}
 		flag := fmt.Sprintf(`hooks.%s=[{%shooks=[{type="command",command=%s,timeout=%d}]}]`,
 			spec.Event, matcher, codexTOMLBasicString(prefix+action), codexHookTimeout)
+		switch spec.Event {
+		case "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop":
+			teamCommand := shellQuoteHookExecutable(executable) + " team hook " + spec.Event
+			teamGroup := fmt.Sprintf(`,{hooks=[{type="command",command=%s,timeout=30}]}`, codexTOMLBasicString(teamCommand))
+			flag = strings.TrimSuffix(flag, "]") + teamGroup + "]"
+		}
 		*cmd = append(*cmd, "-c", flag)
 	}
+}
+
+// TeamHookArgs carries the same mailbox hooks into Codex's app-server mode.
+func TeamHookArgs(executable string) []string {
+	var arguments []string
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"} {
+		command := shellQuoteHookExecutable(executable) + " team hook " + event
+		arguments = append(arguments, "-c", fmt.Sprintf(`hooks.%s=[{hooks=[{type="command",command=%s,timeout=30}]}]`, event, codexTOMLBasicString(command)))
+	}
+	return arguments
+}
+
+// TeamHookCommands identifies the exact session hooks the Chat adapter may trust.
+func TeamHookCommands(executable string) map[string]string {
+	commands := make(map[string]string)
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"} {
+		commands[event] = shellQuoteHookExecutable(executable) + " team hook " + event
+	}
+	return commands
 }
 
 func shellQuoteHookExecutable(executable string) string {
