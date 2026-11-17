@@ -39,3 +39,12 @@ result and submit the mission. Only its assigned orchestrator gives final signof
 If work is blocked, send the supervisor the concrete blocker and next action.
 Use agent-add to create managed agents within your hierarchy. Give workers bounded
 tasks and coordinate file ownership before concurrent edits in a shared checkout.
+
+Each project can have one planner alongside its orchestrator. The planner works
+with the user in its own conversation, searches project knowledge, and persists
+mission drafts with objectives, acceptance criteria, proposed chiefs, and plans.
+Drafts do not assign execution work. Only the human operator releases a reviewed
+draft into an active mission. Released briefs remain as the planning record.
+After release, chiefs organize execution and the orchestrator gives final signoff.
+Org chart changes can update a worker's chief or transfer an active mission with
+its unfinished workers. Read current ownership and revisions before acting.

@@ -5,9 +5,11 @@ import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { PageTopbar, PageTopbarTitle } from "./PageTopbar";
+import { TeamPlanning } from "./TeamPlanning";
+import { TeamOrgChart } from "./TeamOrgChart";
 
 type Role = { id: string; tier: string; instructions: string };
-type Agent = {
+export type Agent = {
 	id: string;
 	tier: string;
 	role: string;
@@ -16,8 +18,9 @@ type Agent = {
 	enabled: number;
 	session_id: string | null;
 	launch_error: string | null;
+	revision: number;
 };
-type Mission = {
+export type Mission = {
 	id: string;
 	chief: string;
 	orchestrator: string;
@@ -28,6 +31,7 @@ type Mission = {
 	result: string | null;
 	evidence: string | null;
 	review: string | null;
+	plan?: string;
 };
 type Task = {
 	id: string;
@@ -55,10 +59,23 @@ export type TeamState = {
 	roles: Role[];
 	agents: Agent[];
 	missions: Mission[];
+	drafts: MissionDraft[];
 	tasks: Task[];
 	messages: Message[];
 	pending: Record<string, number>;
 };
+export type MissionDraft = {
+	id: string;
+	planner: string;
+	chief: string | null;
+	objective: string;
+	criteria: string;
+	plan: string;
+	status: string;
+	revision: number;
+	mission: string | null;
+};
+export type TeamAction = (operation: string, arguments_: Record<string, unknown>) => Promise<boolean>;
 type Editor = "agent-add" | "role-add" | "mission-create" | "task-assign" | "send" | "enable";
 type Field = {
 	name: string;
@@ -106,7 +123,7 @@ function Evidence({ item }: { item: Mission | Task }) {
 export function TeamView() {
 	const queryClient = useQueryClient();
 	const [projectId, setProjectId] = useState("");
-	const [tab, setTab] = useState<"agents" | "missions" | "mail">("agents");
+	const [tab, setTab] = useState<"org" | "planning" | "agents" | "missions" | "mail">("org");
 	const [editor, setEditor] = useState<Editor | null>(null);
 	const [actionError, setActionError] = useState("");
 	const [busy, setBusy] = useState(false);
@@ -142,8 +159,10 @@ export function TeamView() {
 			await teamAction(projectId, operation, arguments_);
 			await queryClient.invalidateQueries({ queryKey: ["project-team", projectId] });
 			setEditor(null);
+			return true;
 		} catch (error) {
 			setActionError(error instanceof Error ? error.message : "Team action failed");
+			return false;
 		} finally {
 			setBusy(false);
 		}
@@ -153,7 +172,7 @@ export function TeamView() {
 		"agent-add": [
 			{ name: "agent", label: "Agent ID" },
 			{ name: "role", label: "Role", options: state?.roles.map((item) => item.id) ?? [] },
-			...(roleTier === "orchestrator"
+			...(["orchestrator", "planner"].includes(roleTier)
 				? []
 				: [
 						{
@@ -165,11 +184,11 @@ export function TeamView() {
 									.map((item) => item.id) ?? [],
 						},
 					]),
-			{ name: "mode", label: "Agent interface", options: ["tui", "chat"] },
+			{ name: "mode", label: "Agent interface", options: roleTier === "planner" ? ["chat", "tui"] : ["tui", "chat"] },
 		],
 		"role-add": [
 			{ name: "role", label: "Role ID" },
-			{ name: "tier", label: "Hierarchy tier", options: ["worker", "chief", "orchestrator"] },
+			{ name: "tier", label: "Hierarchy tier", options: ["worker", "chief", "orchestrator", "planner"] },
 			{ name: "instructions", label: "Role instructions", multiline: true },
 		],
 		"mission-create": [
@@ -260,6 +279,18 @@ export function TeamView() {
 					{state?.enabled && (
 						<>
 							<Button onClick={() => edit("agent-add")}>Spawn agent</Button>
+							<Button
+								variant="outline"
+								onClick={() => {
+									setTab("planning");
+									if (!state.agents.some((agent) => agent.tier === "planner")) {
+										edit("agent-add");
+										setRole("planner");
+									}
+								}}
+							>
+								{state.agents.some((agent) => agent.tier === "planner") ? "Work with planner" : "Create planner"}
+							</Button>
 							<Button variant="outline" onClick={() => edit("mission-create")}>
 								Define mission
 							</Button>
@@ -340,7 +371,7 @@ export function TeamView() {
 				{state?.enabled && (
 					<>
 						<div className="mb-5 flex flex-wrap gap-2" role="tablist" aria-label="Project team">
-							{(["agents", "missions", "mail"] as const).map((item) => (
+							{(["org", "planning", "agents", "missions", "mail"] as const).map((item) => (
 								<Button
 									key={item}
 									role="tab"
@@ -348,10 +379,20 @@ export function TeamView() {
 									variant={tab === item ? "secondary" : "ghost"}
 									onClick={() => setTab(item)}
 								>
-									{item === "agents" ? "Agents" : item === "missions" ? "Missions" : "Mailbox"}
+									{
+										{ org: "Org chart", planning: "Planning", agents: "Agents", missions: "Missions", mail: "Mailbox" }[
+											item
+										]
+									}
 								</Button>
 							))}
 						</div>
+						{tab === "org" && (
+							<TeamOrgChart key={projectId} projectId={projectId} state={state} busy={busy} onAction={execute} />
+						)}
+						{tab === "planning" && (
+							<TeamPlanning key={projectId} projectId={projectId} state={state} busy={busy} onAction={execute} />
+						)}
 						{tab === "agents" && (
 							<>
 								{!state.agents.length && (
@@ -452,6 +493,12 @@ export function TeamView() {
 											<p className="mt-3 whitespace-pre-wrap text-sm">{mission.objective}</p>
 											<p className="mt-3 text-xs text-muted-foreground">Acceptance criteria</p>
 											<p className="whitespace-pre-wrap text-sm">{mission.criteria}</p>
+											{mission.plan && (
+												<details className="mt-3 text-sm">
+													<summary>Approved execution plan</summary>
+													<p className="mt-2 whitespace-pre-wrap">{mission.plan}</p>
+												</details>
+											)}
 											<Evidence item={mission} />
 											<div className="mt-4 space-y-3">
 												{state.tasks

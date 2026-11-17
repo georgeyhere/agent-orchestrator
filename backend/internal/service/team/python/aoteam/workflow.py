@@ -8,21 +8,27 @@ class Workflow:
     def __init__(self, store):
         self.store = store
 
-    def create_mission(self, actor, mission, chief, objective, criteria):
+    def create_mission(self, actor, mission, chief, objective, criteria, plan=""):
         identifier(mission)
         text(objective, "objective")
         text(criteria, "acceptance criteria")
+        if plan:
+            text(plan, "execution plan")
         s = self.store
         with s.connect(True) as db:
-            s.require(db, actor, {"orchestrator"})
-            leader = s.get(db, "agents", chief)
-            if leader["tier"] != "chief" or (actor != "operator" and leader["parent"] != actor):
-                raise ContractError("Assign missions to a chief under this orchestrator")
-            db.execute("INSERT INTO missions(id,chief,orchestrator,objective,criteria) VALUES (?,?,?,?,?)",
-                       (mission, chief, leader["parent"], objective, criteria))
-            s.event(db, actor, "mission.created", {"id": mission, "chief": chief})
-            s._send(db, actor, chief, f"Mission {mission}", json.dumps(s.get(db, "missions", mission)))
-            return s.get(db, "missions", mission)
+            return self.register_mission(db, actor, mission, chief, objective, criteria, plan)
+
+    def register_mission(self, db, actor, mission, chief, objective, criteria, plan=""):
+        s = self.store
+        s.require(db, actor, {"orchestrator"})
+        leader = s.get(db, "agents", chief)
+        if leader["tier"] != "chief" or (actor != "operator" and leader["parent"] != actor):
+            raise ContractError("Assign missions to a chief under this orchestrator")
+        db.execute("INSERT INTO missions(id,chief,orchestrator,objective,criteria,plan) VALUES (?,?,?,?,?,?)",
+                   (mission, chief, leader["parent"], objective, criteria, plan))
+        s.event(db, actor, "mission.created", {"id": mission, "chief": chief})
+        s._send(db, actor, chief, f"Mission {mission}", json.dumps(s.get(db, "missions", mission)))
+        return s.get(db, "missions", mission)
 
     def assign_task(self, actor, task, mission, worker, objective):
         identifier(task)

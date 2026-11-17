@@ -6,8 +6,9 @@ native Codex processes, conversations, worktrees, and agent recovery. The existi
 daemon API serves the new Project teams page in the desktop and browser GUI.
 
 Chiefs use AO's native worker runtime. Their team tier defines their authority in
-the workflow. Each project team has one orchestrator and any number of chiefs and
-workers. Custom roles have a fixed tier and their own standing instructions.
+the workflow. Each project team has one orchestrator, optionally one planner, and
+any number of chiefs and workers. Custom roles have a fixed tier and their own
+standing instructions.
 The first team provider is Codex, with Terminal UI and Chat lifecycle hooks.
 Muse's existing AO adapter remains available for ordinary AO sessions.
 
@@ -45,9 +46,17 @@ existing project binding, or the memory root entered when enabling a team.
    binding if the project needs one. Existing namespaces are preserved.
 4. Spawn an orchestrator, then chiefs under it and workers under their chiefs.
    Choose a role and either Codex Terminal UI or Chat.
-5. Define missions with acceptance criteria. Chiefs assign bounded worker tasks,
+5. Use Create planner to add a project planner, normally in Chat mode. Open its
+   conversation through Work with planner. Request mission planning with a draft
+   ID and goal, then refine the brief, acceptance criteria, constraints, and plan
+   together. The planner saves revisions in the Planning tab.
+6. Review the latest draft, choose a chief, and Release mission. Only the human
+   operator can release it. Drafts have no execution tasks or active mission until
+   release. The approved plan is copied into the mission and remains available.
+   Define mission also remains available for direct creation of an active mission.
+7. Chiefs assign bounded worker tasks,
    inspect verification evidence, and accept or return worker submissions.
-6. A chief submits a mission after all its tasks are accepted. The assigned
+8. A chief submits a mission after all its tasks are accepted. The assigned
    orchestrator approves it or requests changes. Reviews require the current
    revision and feedback. Final prose alone does not change workflow state.
 
@@ -55,6 +64,27 @@ The GUI shows launch errors, pending mail, submission evidence, feedback, and
 revision numbers. Pause dispatch suspends launches and idle wakeups. Stop agent
 also stops the native agent. Resume retries failed launches or resumes a stopped
 native conversation. Open session uses AO's existing conversation or terminal UI.
+
+## Configure the project organization
+
+The Org chart tab is the project's saved organization. It shows the planner and
+orchestrator at project level, each chief under its orchestrator, the chief's
+missions, and the workers reporting to that chief with their unfinished tasks.
+Use Spawn agent to choose custom roles and supervisors when adding team members.
+The planner collaborates with you and has no execution authority.
+
+Move worker changes an idle worker's chief with a revision check. A worker with
+unfinished work stays with its mission. Transfer mission can move an active or
+blocked mission to another chief. When tasks remain unfinished, explicitly select
+the option to move those workers too. The transaction changes the chief, worker
+supervisors, and unfinished task revisions together, then notifies the affected
+agents. The previous chief loses review authority; stale reviews fail. The final
+orchestrator remains unchanged. Missions under final review or already approved
+cannot be transferred. Accepted tasks and their historical evidence are retained.
+
+Each project has its own planner conversation, drafts, roles, reporting lines,
+missions, and mailbox. Switching the project selector selects that project's
+organization. Existing team databases upgrade additively on first use.
 
 ## Agent and CLI operations
 
@@ -85,6 +115,11 @@ Each argument file is one JSON object. These are the operation arguments.
 | `agent-add` | `agent`, `role`, optional `parent`, `provider` (`codex`), `mode` (`tui` or `chat`) |
 | `agent-control` | `agent`, `action` (`pause`, `resume`, `cancel`) |
 | `mission-create` | `mission`, `chief`, `objective`, `criteria` |
+| `draft-create` | `draft`, `objective`, optional `criteria`, `plan`, `chief` |
+| `draft-update` | `draft`, `revision`, `objective`, `criteria`, `plan`, optional `chief` |
+| `draft-release` | `draft`, `revision` (human operator only) |
+| `agent-reparent` | `agent`, `parent`, `revision` (worker's current org revision) |
+| `mission-reassign` | `mission`, `chief`, `revision`, optional boolean `move_workers` |
 | `task-assign` | `task`, `mission`, `worker`, `objective` |
 | `submit` | `kind` (`task` or `mission`), `record`, `revision`, `result`, `evidence` |
 | `review` | `kind`, `record`, `revision`, `approve` (boolean), `feedback` |

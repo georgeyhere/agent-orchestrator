@@ -198,6 +198,8 @@ var publicOperations = map[string]bool{
 	"memory-policy": true, "memory-search": true, "memory-read": true, "memory-context": true,
 	"memory-related": true, "memory-write": true, "memory-capture": true, "memory-lint": true, "memory-commit": true,
 	"memory-recover": true,
+	"draft-create":   true, "draft-update": true, "draft-release": true,
+	"agent-reparent": true, "mission-reassign": true,
 }
 
 func (s *Service) Execute(ctx context.Context, project domain.ProjectID, request Request) (json.RawMessage, error) {

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from .config import ContractError, identifier, text
 from .store import Store, now
 from .workflow import Workflow
+from .planning import Planning
 
 
 EXTRA_SCHEMA = """
@@ -44,6 +45,7 @@ class Team:
         if self.store is None:
             self.store = Store(self.config)
             self.workflow = Workflow(self.store)
+            self.planning = Planning(self.store, self.workflow)
             with self.store.connect(True) as db:
                 db.executescript(EXTRA_SCHEMA)
         return self.store
@@ -174,7 +176,12 @@ class Team:
                 "The operations are role-add(role,tier,instructions), agent-add(agent,role,parent,provider,mode), "
                 "mission-create(mission,chief,objective,criteria), task-assign(task,mission,worker,objective), "
                 "submit(kind,record,revision,result,evidence), review(kind,record,revision,approve,feedback), "
-                "send(recipient,subject,body,key), ack(message), block(kind,record,revision,reason), unblock(kind,record,revision). "
+                "send(recipient,subject,body,key), ack(message), block(kind,record,revision,reason), unblock(kind,record,revision), "
+                "draft-create(draft,objective,criteria,plan,chief), draft-update(draft,revision,objective,criteria,plan,chief), "
+                "agent-reparent(agent,parent,revision), mission-reassign(mission,chief,revision,move_workers). "
+                "Drafts stay separate from execution until the human operator uses draft-release(draft,revision). "
+                "The planner collaborates with the user on the brief and plan, and cannot launch execution or give final signoff. "
+                "Org chart changes preserve task ownership and notify affected agents. Read current supervisors from ao team status; they may change after launch. "
                 "Use task/mission for kind and real verification evidence. "
                 "Custom roles retain their fixed hierarchy tier. Mission approval belongs to its assigned orchestrator. "
                 "A chief's native AO session uses the worker runtime, and its chief authority comes from this team workflow. "
@@ -262,7 +269,9 @@ class Team:
         messages = self.store.pending(agent, 1)
         with self.store.connect() as db:
             item = self.store.get(db, "agents", agent)
-            if item["tier"] == "worker":
+            if item["tier"] == "planner":
+                due = False  # Planning is conversational; do not repeatedly wake an agent waiting on user answers.
+            elif item["tier"] == "worker":
                 due = bool(db.execute("SELECT 1 FROM tasks WHERE worker=? AND status='assigned'", (agent,)).fetchone())
             elif item["tier"] == "chief":
                 due = bool(db.execute("SELECT 1 FROM tasks t JOIN missions m ON m.id=t.mission WHERE m.chief=? AND t.status='review'", (agent,)).fetchone())
@@ -297,7 +306,7 @@ class Team:
         if not self.exists and operation not in {"enable", "status"}:
             return {"managed": False} if operation in {"resolve", "instructions", "hook", "dispatch"} else self.disabled()
         if operation == "status" and not self.exists:
-            return {"enabled": False, "agents": [], "roles": [], "missions": [], "tasks": [], "messages": [], "events": [], "pending": {}}
+            return {"enabled": False, "agents": [], "roles": [], "missions": [], "drafts": [], "tasks": [], "messages": [], "events": [], "pending": {}}
         self.open()
         if operation in {"resolve", "attach", "launch-result", "native-failed", "dispatch", "instructions", "wake", "wake-result"}:
             if operation == "instructions":
@@ -324,6 +333,8 @@ class Team:
         if operation.startswith("memory-"):
             return self.memory(actor, operation, arguments)
         methods = {"role-add": self.store.add_role, "agent-add": self.add_agent, "agent-control": self.control,
+                   "draft-create": self.planning.create, "draft-update": self.planning.update, "draft-release": self.planning.release,
+                   "agent-reparent": self.planning.reparent, "mission-reassign": self.planning.reassign,
                    "mission-create": self.workflow.create_mission, "task-assign": self.workflow.assign_task,
                    "submit": self.workflow.submit, "review": self.workflow.review, "send": self.store.send, "ack": self.store.acknowledge,
                    "block": self.transition_block, "unblock": self.transition_block}

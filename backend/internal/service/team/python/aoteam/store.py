@@ -15,6 +15,7 @@ def now():
 
 
 DEFAULT_ROLES = {
+    "planner": ("planner", "Work with the user to clarify mission objectives, scope, constraints, acceptance criteria, and an execution plan. Maintain revisioned mission drafts through draft-create and draft-update. Ask focused questions in your conversation. Only the human operator releases a draft for execution. Do not assign execution tasks or approve missions."),
     "orchestrator": ("orchestrator", "Coordinate project chiefs. Define missions and acceptance criteria. Review evidence and give final mission signoff or request changes."),
     "chief": ("chief", "Drive your mission to completion. Assign bounded tasks to workers, resolve blockers, verify their results, and submit the mission for orchestrator review."),
     "worker": ("worker", "Complete your assigned tasks, verify the result, and report precise evidence to your chief. Escalate blockers promptly."),
@@ -28,12 +29,17 @@ CREATE TABLE IF NOT EXISTS roles (
 CREATE TABLE IF NOT EXISTS agents (
  id TEXT PRIMARY KEY, tier TEXT NOT NULL, role TEXT NOT NULL REFERENCES roles(id),
  parent TEXT REFERENCES agents(id), provider TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
- last_error TEXT, cancelled INTEGER NOT NULL DEFAULT 0);
+ last_error TEXT, cancelled INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS missions (
  id TEXT PRIMARY KEY, chief TEXT NOT NULL REFERENCES agents(id),
  orchestrator TEXT NOT NULL REFERENCES agents(id), objective TEXT NOT NULL, criteria TEXT NOT NULL,
  status TEXT NOT NULL DEFAULT 'active', revision INTEGER NOT NULL DEFAULT 1,
- result TEXT, evidence TEXT, review TEXT);
+ result TEXT, evidence TEXT, review TEXT, plan TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS drafts (
+ id TEXT PRIMARY KEY, planner TEXT NOT NULL REFERENCES agents(id), chief TEXT REFERENCES agents(id),
+ objective TEXT NOT NULL, criteria TEXT NOT NULL DEFAULT '', plan TEXT NOT NULL DEFAULT '',
+ status TEXT NOT NULL DEFAULT 'draft', revision INTEGER NOT NULL DEFAULT 1,
+ mission TEXT UNIQUE REFERENCES missions(id));
 CREATE TABLE IF NOT EXISTS tasks (
  id TEXT PRIMARY KEY, mission TEXT NOT NULL REFERENCES missions(id), worker TEXT NOT NULL REFERENCES agents(id),
  objective TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'assigned', revision INTEGER NOT NULL DEFAULT 1,
@@ -57,10 +63,16 @@ class Store:
         self.path = config.state / "team.sqlite3"
         with self.connect() as db:
             db.executescript(SCHEMA)
+            db.execute("BEGIN IMMEDIATE")
             version = db.execute("SELECT value FROM settings WHERE key='schema'").fetchone()
-            if version and version[0] != "1":
+            if version and version[0] not in {"1", "2"}:
                 raise ContractError("Unsupported state schema")
-            db.execute("INSERT OR IGNORE INTO settings VALUES ('schema','1')")
+            # Additive upgrade of the Python-owned database preserves live teams.
+            for table, column, declaration in (("agents", "revision", "INTEGER NOT NULL DEFAULT 1"),
+                                                ("missions", "plan", "TEXT NOT NULL DEFAULT ''")):
+                if column not in {row[1] for row in db.execute(f"PRAGMA table_info({table})")}:
+                    db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+            db.execute("INSERT OR REPLACE INTO settings VALUES ('schema','2')")
             binding = config.project / ".llmwiki.json"
             if binding.exists():
                 identity = json.loads(binding.read_text(encoding="utf-8"))
@@ -96,7 +108,7 @@ class Store:
 
     @staticmethod
     def get(db, table, key):
-        if table not in {"agents", "roles", "missions", "tasks", "messages"}:
+        if table not in {"agents", "roles", "missions", "tasks", "messages", "drafts"}:
             raise ContractError("Unknown record type")
         row = db.execute(f"SELECT * FROM {table} WHERE id=?", (key,)).fetchone()
         if row is None:
@@ -115,7 +127,7 @@ class Store:
         identifier(role)
         text(instructions, "instructions")
         if tier not in DEFAULT_ROLES:
-            raise ContractError("Role tier must be orchestrator, chief or worker")
+            raise ContractError("Role tier must be planner, orchestrator, chief or worker")
         with self.connect(True) as db:
             self.require(db, actor, {"orchestrator"})
             db.execute("INSERT INTO roles VALUES (?,?,?)", (role, tier, instructions))
@@ -137,9 +149,11 @@ class Store:
         tier = definition["tier"]
         if caller and (tier == "orchestrator" or (caller["tier"] == "chief" and (tier != "worker" or parent != actor))):
             raise ContractError("Chiefs may create their workers. Orchestrators may create chiefs and workers")
-        if tier == "orchestrator":
+        if tier in {"orchestrator", "planner"}:
             if parent:
-                raise ContractError("An orchestrator has no parent")
+                raise ContractError("Project planners and orchestrators have no parent")
+            if db.execute("SELECT 1 FROM agents WHERE tier=?", (tier,)).fetchone():
+                raise ContractError(f"Each project team has one {tier}")
         else:
             supervisor = self.get(db, "agents", parent)
             expected = {"chief": "orchestrator", "worker": "chief"}[tier]
@@ -214,7 +228,7 @@ class Store:
 
     def snapshot(self):
         with self.connect() as db:
-            result = {table: [dict(row) for row in db.execute(f"SELECT * FROM {table}")] for table in ("roles", "agents", "missions", "tasks")}
+            result = {table: [dict(row) for row in db.execute(f"SELECT * FROM {table}")] for table in ("roles", "agents", "missions", "tasks", "drafts")}
             result["messages"] = [dict(row) for row in db.execute("SELECT * FROM messages ORDER BY seq DESC LIMIT 100")]
             result["pending"] = {row[0]: row[1] for row in db.execute("SELECT recipient,COUNT(*) FROM messages WHERE acknowledged_at IS NULL GROUP BY recipient")}
             return result

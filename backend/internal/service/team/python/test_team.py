@@ -50,6 +50,147 @@ class TeamTests(unittest.TestCase):
         for message in self.action("inbox", actor=actor):
             self.action("ack", {"message": message["id"]}, actor)
 
+    def planner(self):
+        self.action("agent-add", {"agent": "planner", "role": "planner", "mode": "chat"})
+        Team(self.request | {"operation": "attach", "arguments": {"agent": "planner", "session_id": "session-planner"}}).execute()
+        self.clear_mail("planner")
+
+    def second_chief(self):
+        self.action("agent-add", {"agent": "chief-two", "role": "chief", "parent": "orch"}, "orch")
+        Team(self.request | {"operation": "attach", "arguments": {"agent": "chief-two", "session_id": "session-chief-two"}}).execute()
+        self.clear_mail("chief-two")
+
+    def draft(self):
+        self.planner()
+        return self.action("draft-create", {"draft": "planned-feature", "objective": "Export reports", "criteria": "Filters preserved and tests pass", "plan": "Inspect report API, implement export, verify behavior", "chief": "chief"}, "planner")
+
+    def test_planner_drafts_do_not_dispatch_execution_until_human_release(self):
+        self.draft()
+        self.assertEqual(self.action("status")["missions"], [])
+        self.assertEqual(self.action("inbox", actor="chief"), [])
+        with self.assertRaises(ContractError):
+            self.action("draft-release", {"draft": "planned-feature", "revision": 1}, "planner")
+        mission = self.action("draft-release", {"draft": "planned-feature", "revision": 1})
+        self.assertEqual(mission["status"], "active")
+        self.assertEqual(mission["orchestrator"], "orch")
+        self.assertIn("verify behavior", mission["plan"])
+        self.assertEqual(self.action("status")["drafts"][0]["status"], "released")
+        self.assertTrue(self.action("inbox", actor="chief"))
+
+    def test_planner_cannot_create_executing_missions_or_workers(self):
+        self.planner()
+        with self.assertRaises(ContractError):
+            self.action("mission-create", {"mission": "bypass", "chief": "chief", "objective": "Bypass planning", "criteria": "Work"}, "planner")
+        with self.assertRaises(ContractError):
+            self.action("agent-add", {"agent": "unapproved", "role": "worker", "parent": "chief"}, "planner")
+        self.action("role-add", {"role": "product-planner", "tier": "planner", "instructions": "Plan carefully"}, "orch")
+        with self.assertRaises(ContractError):
+            self.action("agent-add", {"agent": "another-planner", "role": "product-planner"})
+
+    def test_human_and_planner_cannot_overwrite_stale_draft_revisions(self):
+        self.draft()
+        fields = {"draft": "planned-feature", "revision": 1, "objective": "Revised export", "criteria": "Verified criteria", "plan": "Updated plan", "chief": "chief"}
+        self.action("draft-update", fields)
+        with self.assertRaises(ContractError):
+            self.action("draft-update", fields, "planner")
+        with self.assertRaises(ContractError):
+            self.action("draft-release", {"draft": "planned-feature", "revision": 1})
+        fields["revision"] = 2
+        with self.assertRaises(ContractError):
+            self.action("draft-update", fields, "chief")
+        self.action("draft-update", fields, "planner")
+        self.assertEqual(self.action("status")["drafts"][0]["revision"], 3)
+
+    def test_incomplete_and_released_drafts_cannot_start_more_work(self):
+        self.planner()
+        self.action("draft-create", {"draft": "incomplete", "objective": "Discuss this goal"})
+        with self.assertRaises(ContractError):
+            self.action("draft-release", {"draft": "incomplete", "revision": 1})
+        self.assertEqual(self.action("status")["missions"], [])
+        self.action("draft-update", {"draft": "incomplete", "revision": 1, "objective": "Discuss goal", "criteria": "Tests pass", "plan": "Build and verify", "chief": "chief"}, "planner")
+        self.action("draft-release", {"draft": "incomplete", "revision": 2})
+        with self.assertRaises(ContractError):
+            self.action("draft-release", {"draft": "incomplete", "revision": 2})
+        self.assertEqual(len(self.action("status")["missions"]), 1)
+
+    def test_release_collision_rolls_back_draft_and_notifications(self):
+        import sqlite3
+        self.draft()
+        self.action("mission-create", {"mission": "planned-feature", "chief": "chief", "objective": "Existing mission", "criteria": "Existing criteria"})
+        before = self.action("export")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.action("draft-release", {"draft": "planned-feature", "revision": 1})
+        self.assertEqual(self.action("status")["drafts"][0]["status"], "draft")
+        self.assertEqual(before, self.action("export"))
+
+    def test_org_chart_moves_idle_workers_with_revision_checks(self):
+        self.second_chief()
+        moved = self.action("agent-reparent", {"agent": "worker", "parent": "chief-two", "revision": 1})
+        self.assertEqual((moved["parent"], moved["revision"]), ("chief-two", 2))
+        with self.assertRaises(ContractError):
+            self.action("agent-reparent", {"agent": "worker", "parent": "chief", "revision": 1})
+        with self.assertRaises(ContractError):
+            self.action("agent-reparent", {"agent": "worker", "parent": "chief", "revision": 2}, "chief-two")
+        self.assertIn("now reports to chief-two", json.dumps(self.action("inbox", actor="worker")))
+
+    def test_org_chart_keeps_busy_workers_with_their_mission(self):
+        self.second_chief()
+        self.mission()
+        with self.assertRaises(ContractError):
+            self.action("agent-reparent", {"agent": "worker", "parent": "chief-two", "revision": 1})
+        with self.assertRaises(ContractError):
+            self.action("mission-reassign", {"mission": "mission", "chief": "chief-two", "revision": 1})
+        self.assertEqual(self.action("status")["missions"][0]["chief"], "chief")
+
+    def test_mission_transfer_preserves_work_and_changes_review_authority(self):
+        self.second_chief()
+        self.mission()
+        self.action("submit", {"kind": "task", "record": "task", "revision": 1, "result": "Implemented", "evidence": "Tests pass"}, "worker")
+        self.action("mission-reassign", {"mission": "mission", "chief": "chief-two", "revision": 1, "move_workers": True}, "orch")
+        state = self.action("status")
+        self.assertEqual(state["tasks"][0]["revision"], 3)
+        self.assertEqual(state["tasks"][0]["status"], "review")
+        self.assertEqual(next(agent for agent in state["agents"] if agent["id"] == "worker")["parent"], "chief-two")
+        with self.assertRaises(ContractError):
+            self.action("review", {"kind": "task", "record": "task", "revision": 3, "approve": True, "feedback": "Old chief"}, "chief")
+        with self.assertRaises(ContractError):
+            self.action("review", {"kind": "task", "record": "task", "revision": 2, "approve": True, "feedback": "Stale review"}, "chief-two")
+        self.action("review", {"kind": "task", "record": "task", "revision": 3, "approve": True, "feedback": "Verified"}, "chief-two")
+        self.action("submit", {"kind": "mission", "record": "mission", "revision": 2, "result": "Complete", "evidence": "Integrated checks passed"}, "chief-two")
+        with self.assertRaises(ContractError):
+            self.action("mission-reassign", {"mission": "mission", "chief": "chief", "revision": 3})
+        self.assertEqual(self.action("review", {"kind": "mission", "record": "mission", "revision": 3, "approve": True, "feedback": "Final signoff"}, "orch")["status"], "approved")
+
+    def test_schema_one_upgrade_preserves_existing_team_and_work(self):
+        self.mission()
+        team = Team(self.request);team.open()
+        with team.store.connect(True) as db:
+            db.execute("ALTER TABLE agents DROP COLUMN revision")
+            db.execute("ALTER TABLE missions DROP COLUMN plan")
+            db.execute("DROP TABLE drafts")
+            db.execute("UPDATE settings SET value='1' WHERE key='schema'")
+        state = self.action("status")
+        self.assertEqual(state["missions"][0]["id"], "mission")
+        self.assertEqual(state["missions"][0]["plan"], "")
+        self.assertEqual(state["drafts"], [])
+        self.assertEqual(state["agents"][0]["revision"], 1)
+        self.assertEqual(len(state["tasks"]), 1)
+
+    def test_planners_drafts_and_org_charts_are_project_scoped(self):
+        self.draft()
+        project = self.root / "other-project"
+        project.mkdir()
+        request = self.request | {"project_id": "project-two", "project_path": str(project), "state_path": str(self.root / "other-state")}
+        Team(request | {"operation": "enable", "arguments": {"memory_root": str(self.memory)}}).execute()
+        Team(request | {"operation": "agent-add", "arguments": {"agent": "planner", "role": "planner"}}).execute()
+        other = Team(request | {"operation": "status"}).execute()
+        self.assertEqual(other["drafts"], [])
+        self.assertEqual(other["missions"], [])
+        self.assertEqual([agent["id"] for agent in other["agents"]], ["planner"])
+        original = self.action("status")
+        self.assertEqual(len(original["drafts"]), 1)
+        self.assertEqual(len(original["agents"]), 4)
+
     def mission(self):
         self.action("mission-create", {"mission": "mission", "chief": "chief", "objective": "Build feature", "criteria": "Tests pass"}, "orch")
         self.action("task-assign", {"task": "task", "mission": "mission", "worker": "worker", "objective": "Implement feature"}, "chief")

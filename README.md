@@ -37,8 +37,8 @@ One coding agent can handle a task. Running several means splitting the work, ke
 
 ## Fork additions
 
-[Project teams](docs/team-workflow.md) adds mission chiefs, custom agent roles,
-orchestrator signoff, Python-managed persistent mail, and llmwiki/datashard
+[Project teams](docs/team-workflow.md) adds project planners, editable org charts,
+mission chiefs, custom roles, orchestrator signoff, persistent Python mail, and llmwiki/datashard
 integration. Run `python scripts/team-dev.py` for the local browser GUI after
 installing the prerequisites in that guide.
 
