@@ -2,15 +2,20 @@ package muse
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hooksjson"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/hookutil"
+	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
 	"github.com/aoagents/agent-orchestrator/backend/internal/ports"
 )
 
@@ -51,6 +56,9 @@ func museHookGroup(cfg ports.WorkspaceHookConfig, event string) hooksjson.Matche
 // callback route directly in AO's per-session hook command so the callback can
 // identify its AO session and, in dev mode, the exact daemon that launched it.
 func museHookCommand(cfg ports.WorkspaceHookConfig, event string) string {
+	if runtime.GOOS == "windows" {
+		return museWindowsCommand(cfg, "ao", "hooks muse "+event)
+	}
 	assignments := []string{
 		"AO_SESSION_ID=" + museShellQuote(strings.TrimSpace(cfg.SessionID)),
 		"AO_DATA_DIR=" + museShellQuote(strings.TrimSpace(cfg.DataDir)),
@@ -59,6 +67,31 @@ func museHookCommand(cfg ports.WorkspaceHookConfig, event string) string {
 		assignments = append(assignments, aoRunFileEnvVar+"="+museShellQuote(runFile))
 	}
 	return "env " + strings.Join(assignments, " ") + " " + museHookCommandPrefix + event
+}
+
+// Use an explicit PowerShell process on Windows, independent of Muse's hook
+// shell. Encoding preserves paths containing spaces, quotes or shell syntax.
+func museWindowsCommand(cfg ports.WorkspaceHookConfig, executable, arguments string) string {
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }
+	script := "$env:AO_SESSION_ID=" + quote(cfg.SessionID) + ";$env:AO_DATA_DIR=" + quote(cfg.DataDir) + ";"
+	if runFile := strings.TrimSpace(os.Getenv(aoRunFileEnvVar)); runFile != "" {
+		script += "$env:AO_RUN_FILE=" + quote(runFile) + ";"
+	}
+	script += "& " + quote(executable) + " " + arguments + ";exit $LASTEXITCODE"
+	units := utf16.Encode([]rune(script))
+	data := make([]byte, len(units)*2)
+	for i, unit := range units {
+		binary.LittleEndian.PutUint16(data[i*2:], unit)
+	}
+	return "powershell.exe -NoProfile -NonInteractive -EncodedCommand " + base64.StdEncoding.EncodeToString(data)
+}
+
+func museTeamHookCommand(cfg ports.WorkspaceHookConfig, executable, event string) string {
+	if runtime.GOOS == "windows" {
+		return museWindowsCommand(cfg, executable, "team hook "+event)
+	}
+	command := museHookCommand(cfg, event)
+	return strings.TrimSuffix(command, museHookCommandPrefix+event) + museShellQuote(executable) + " team hook " + event
 }
 
 func museShellQuote(value string) string {
@@ -76,7 +109,19 @@ func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfi
 	if err != nil {
 		return fmt.Errorf("muse.GetAgentHooks: %w", err)
 	}
-	data, err := json.MarshalIndent(museHooksFile{Hooks: museManagedHooks(cfg)}, "", "  ")
+	hooks := museManagedHooks(cfg)
+	if cfg.Env["AO_TEAM_MANAGED"] == "1" {
+		executable, err := agentlaunch.Executable()
+		if err != nil {
+			return fmt.Errorf("muse.GetAgentHooks: resolve AO executable: %w", err)
+		}
+		for _, event := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"} {
+			hooks[event] = append(hooks[event], hooksjson.MatcherGroup{Hooks: []hooksjson.HookEntry{{
+				Type: "command", Command: museTeamHookCommand(cfg, executable, event), Timeout: 30,
+			}}})
+		}
+	}
+	data, err := json.MarshalIndent(museHooksFile{Hooks: hooks}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("muse.GetAgentHooks: marshal hooks: %w", err)
 	}

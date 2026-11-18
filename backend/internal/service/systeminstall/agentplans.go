@@ -212,7 +212,7 @@ func (s requestPlanner) agentMethodPlans(target Target, operation AgentOperation
 	case TargetMuse:
 		switch s.goos {
 		case "windows":
-			plans = []Plan{manualPlan(target, "Muse Code does not currently publish a native Windows installer.", agentDocumentationURLs[target])}
+			plans = []Plan{manualPlan(target, "Use the Muse Code CLI installed as muse. AO checks PATH and %LOCALAPPDATA%\\Programs\\muse\\muse.cmd. Automatic Windows installation is not configured; restart AO after installing Muse.", agentDocumentationURLs[target])}
 		case "darwin", "linux":
 			plans = []Plan{s.planShellInstaller(target, "https://dev.meta.ai/install.sh", "bash")}
 		default:

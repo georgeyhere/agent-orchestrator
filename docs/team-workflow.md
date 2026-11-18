@@ -9,10 +9,11 @@ Chiefs use AO's native worker runtime. Their team tier defines their authority i
 the workflow. Each project team has one orchestrator, optionally one planner, and
 any number of chiefs and workers. Custom roles have a fixed tier and their own
 standing instructions.
-The first team provider is Codex, with Terminal UI and Chat lifecycle hooks.
-Muse's existing AO adapter remains available for ordinary AO sessions.
+Team providers are Codex (Terminal UI and Chat) and Muse Code (Terminal UI).
+Both receive the team mailbox hooks and llmwiki/datashard instructions. On Windows,
+Muse is discovered on PATH or at `%LOCALAPPDATA%\Programs\muse\muse.cmd`.
 
-## Run the browser GUI
+## Run the desktop app
 
 Use Python 3.11+, Git, Node 24+, Go 1.27.4+, an authenticated Codex CLI, and llmwiki
 installed in the selected Python environment. An adjacent `llmwiki/src` checkout
@@ -24,28 +25,77 @@ Install dependencies from the repository root.
 npm ci
 npm ci --prefix packages/product-ui
 npm ci --prefix frontend
-python scripts/team-dev.py
+python scripts/team-desktop.py --build
 ```
 
-The launcher builds AO, runs the daemon and browser GUI on loopback, and opens
-Project teams. Development state defaults to `~/.ao/team-dev`. Use `--data-dir`,
+The first build uses AO's standard Electron Forge package pipeline, including its
+native preload bridge, folder picker, bundled Go daemon, and runtime resources.
+It can take several minutes. Subsequent launches open the compiled app directly,
+without rebuilding Go or starting Vite.
+
+```sh
+python scripts/team-desktop.py
+```
+
+On Windows, add `--shortcut` once to create an **Agent Teams** desktop shortcut.
+The shortcut uses the selected environment's `pythonw.exe`, so no PowerShell window
+is needed. It keeps its data directory and memory settings in
+`desktop-launch.json` under the chosen state directory. The launcher configures
+Python and an adjacent llmwiki source checkout for the native daemon; Python and
+llmwiki remain explicit runtime dependencies.
+
+The team launcher opens **Project teams** directly. It provides **Planning**,
+**Missions**, **Workers**, **Agents**, **Org chart**, and **Mailbox** views.
+Workers show their supervisors, current task and mission, and session controls.
+The org chart shows project-level planner/orchestrator, chiefs and their missions,
+and the workers reporting to each chief.
+
+Desktop and browser launchers default to the same `~/.ao/team-dev` project state.
+Close the browser launcher with Ctrl+C before switching to the desktop app, so
+Electron can start and supervise its bundled daemon. Use `--data-dir`, `--port`,
+and `--memory-root` to select other state. Quit the app through its normal desktop
+quit command; Electron owns daemon shutdown. `--build-only` builds without launch.
+Local packages use this fork as their update source via `AO_RELEASE_REPO`.
+
+## Browser development mode
+
+`python scripts/team-dev.py` now opens the desktop app for compatibility with
+existing launch commands. Use `python scripts/team-dev.py --browser` for browser development. Native
+desktop actions such as the folder picker use Electron's preload bridge, so use
+the desktop app for native folder browsing. The team page also accepts a typed
+repository path, including in browser mode.
+
+The browser launcher builds AO and starts the daemon and Vite on loopback. Use `--data-dir`,
 `--port`, `--gui-port`, `--memory-root`, `--no-browser`, and `--skip-build` as needed.
 Logs are `daemon.log` and `gui.log` under the selected development directory.
 The launcher can use portable Windows tools installed under `.cache/toolchains`.
 
 For a packaged desktop or independently launched daemon, set `AO_TEAM_PYTHON` to
 the Python executable. Set `AO_LLMWIKI_SOURCE` to llmwiki's `src` directory if the
-package is supplied from source. Select datashard using `LLMWIKI_MEMORY_ROOT`, an
-existing project binding, or the memory root entered when enabling a team.
+package is supplied from source. Datashard defaults to the `LLMWIKI_MEMORY_ROOT`
+environment variable. On Windows, team requests also read the current user/system
+environment setting when it is absent from the daemon's inherited environment.
+An explicit project override takes precedence. If no variable or override is set,
+llmwiki uses its existing binding or standard `~/.llmwiki-memory` location. A root
+must contain the namespace identified by an existing project's binding; choosing
+an empty datashard does not move or recreate existing project memory.
+
+For example, to configure this Windows user's existing datashard:
+
+```powershell
+[Environment]::SetEnvironmentVariable('LLMWIKI_MEMORY_ROOT', 'C:\path\to\datashard', 'User')
+```
 
 ## Create a team
 
-1. Add the working repository through AO's normal Add project flow.
+1. In Project teams, use Add project. Browse for a folder in Electron or enter
+   the repository path, then choose Add project folder. The repository needs an
+   initial Git commit. Registration opens team setup without starting agents.
 2. Open Project teams and select the project.
 3. Enable its team. This validates llmwiki and creates a stable `.llmwiki.json`
    binding if the project needs one. Existing namespaces are preserved.
 4. Spawn an orchestrator, then chiefs under it and workers under their chiefs.
-   Choose a role and either Codex Terminal UI or Chat.
+   Choose a role and provider: Codex Terminal UI/Chat or Muse Terminal UI.
 5. Use Create planner to add a project planner, normally in Chat mode. Open its
    conversation through Work with planner. Request mission planning with a draft
    ID and goal, then refine the brief, acceptance criteria, constraints, and plan

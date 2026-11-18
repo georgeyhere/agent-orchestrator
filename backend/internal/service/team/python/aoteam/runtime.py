@@ -10,7 +10,7 @@ import sys
 import time
 from types import SimpleNamespace
 
-from .config import ContractError, identifier, text
+from .config import ContractError, configured_memory_root, identifier, text
 from .store import Store, now
 from .workflow import Workflow
 from .planning import Planning
@@ -61,7 +61,7 @@ class Team:
         self.open()
         with self.store.connect() as db:
             row = db.execute("SELECT value FROM settings WHERE key='memory_root'").fetchone()
-        memory_root = row[0] if row and row[0] else None
+        memory_root = row[0] if row and row[0] else configured_memory_root()
         return Wiki(workspace or self.project, memory_root)
 
     def enable(self, actor, memory_root=None):
@@ -79,7 +79,7 @@ class Team:
             from llmwiki.core import Store as Wiki
             # The explicit enable action authorizes a new stable memory binding.
             project_id = "ao-" + hashlib.sha256(self.request["project_id"].encode()).hexdigest()[:16]
-            chosen_root = memory_root or os.environ.get("LLMWIKI_MEMORY_ROOT")
+            chosen_root = memory_root or configured_memory_root()
             Wiki.initialize(self.project, project_id=project_id, memory_root=chosen_root)
             # Keep the project binding portable. Machine-specific roots belong
             # to team settings or LLMWIKI_MEMORY_ROOT.
@@ -143,8 +143,10 @@ class Team:
         return {"managed": True, "agent": row[0]}
 
     def add_agent(self, actor, agent, role, parent=None, provider="codex", mode="tui"):
-        if provider != "codex":
-            raise ContractError("Team lifecycle hooks currently support Codex. Muse can be added through the provider adapter")
+        if provider not in {"codex", "muse"}:
+            raise ContractError("Agent provider must be codex or muse")
+        if provider == "muse" and mode != "tui":
+            raise ContractError("Muse team agents use the terminal interface (tui)")
         if mode not in {"tui", "chat"}:
             raise ContractError("Agent interface must be tui or chat")
         self.wiki()  # Validate the exact memory namespace before creating work.

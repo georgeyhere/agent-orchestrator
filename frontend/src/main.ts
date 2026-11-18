@@ -4,6 +4,7 @@ import { SideCloseController } from "./main/side-close-controller";
 import { SideLaunchRecovery } from "./main/side-launch-recovery";
 import { launchTriageInTerminal } from "./main/triage-launch";
 import { initializeDesktopLog } from "./main/desktop-log";
+import { teamStartupUrl } from "./main/team-startup-url";
 import { syncMacWindowButtons } from "./main/window-chrome";
 import { MAC_TRAFFIC_LIGHT_ROW_HEIGHT, MAC_WINDOW_BUTTON_X, MAC_WINDOW_BUTTON_RADIUS } from "./shared/window-chrome";
 import { finishUpdateQuit } from "./main/update-quit";
@@ -739,10 +740,10 @@ function registerRendererProtocol(): void {
 
 function rendererUrl(): string {
 	if (typeof MAIN_WINDOW_VITE_DEV_SERVER_URL !== "undefined" && MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-		return MAIN_WINDOW_VITE_DEV_SERVER_URL;
+		return teamStartupUrl(MAIN_WINDOW_VITE_DEV_SERVER_URL, process.env.AO_TEAM_DESKTOP === "1");
 	}
 
-	return `${RENDERER_ORIGIN}/index.html`;
+	return teamStartupUrl(`${RENDERER_ORIGIN}/index.html`, process.env.AO_TEAM_DESKTOP === "1");
 }
 
 function preloadPath(): string {

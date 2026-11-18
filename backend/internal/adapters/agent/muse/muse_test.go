@@ -2,6 +2,8 @@ package muse
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/binaryutil"
@@ -337,6 +340,15 @@ func TestManagedHookCommandsRestoreSanitizedAORoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	command := file.Hooks["UserPromptSubmit"][0].Hooks[0].Command
+	if runtime.GOOS == "windows" {
+		command = decodedMuseHook(t, command)
+		for _, value := range []string{"$env:AO_SESSION_ID='sess-1'", "$env:AO_DATA_DIR='" + strings.ReplaceAll(dataDir, "'", "''") + "'", "$env:AO_RUN_FILE='" + strings.ReplaceAll(runFile, "'", "''") + "'", "hooks muse user-prompt-submit"} {
+			if !strings.Contains(command, value) {
+				t.Fatalf("command %q missing %q", command, value)
+			}
+		}
+		return
+	}
 	want := "env AO_SESSION_ID='sess-1' AO_DATA_DIR=" + museShellQuote(dataDir) +
 		" AO_RUN_FILE=" + museShellQuote(runFile) + " ao hooks muse user-prompt-submit"
 	if command != want {
@@ -379,9 +391,81 @@ func assertMuseManagedHooks(t *testing.T, path string) {
 			t.Fatalf("hooks[%q] = %#v, want one command", nativeEvent, groups)
 		}
 		hook := groups[0].Hooks[0]
-		if hook.Type != "command" || !strings.HasSuffix(hook.Command, " "+museHookCommandPrefix+aoEvent) {
+		if hook.Type != "command" || !strings.Contains(decodedMuseHook(t, hook.Command), "hooks muse "+aoEvent) {
 			t.Fatalf("hooks[%q] = %#v, want AO %q command", nativeEvent, hook, aoEvent)
 		}
+	}
+}
+
+func decodedMuseHook(t *testing.T, command string) string {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return command
+	}
+	parts := strings.Fields(command)
+	data, err := base64.StdEncoding.DecodeString(parts[len(parts)-1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	units := make([]uint16, len(data)/2)
+	for i := range units {
+		units[i] = binary.LittleEndian.Uint16(data[i*2:])
+	}
+	return string(utf16.Decode(units))
+}
+
+func TestTeamHooksIncludeMailboxBoundariesWithoutToolActivity(t *testing.T) {
+	cfg := ports.WorkspaceHookConfig{DataDir: t.TempDir(), SessionID: "team-worker", Env: map[string]string{"AO_TEAM_MANAGED": "1"}}
+	if err := (&Plugin{}).GetAgentHooks(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	path, err := museManagedHooksPath(cfg.DataDir, cfg.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file museHooksFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"} {
+		groups := file.Hooks[event]
+		if len(groups) == 0 {
+			t.Fatalf("missing %s", event)
+		}
+		hook := groups[len(groups)-1].Hooks[0]
+		if hook.Timeout != 30 || !strings.Contains(decodedMuseHook(t, hook.Command), "team hook "+event) {
+			t.Fatalf("invalid mailbox hook: %+v", hook)
+		}
+	}
+	if len(file.Hooks["PostToolUse"]) != 1 {
+		t.Fatal("tool hooks must only check the mailbox, without changing session activity")
+	}
+}
+
+func TestWindowsHookPreservesRoutingAndLiteralPaths(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows shell boundary")
+	}
+	root := t.TempDir()
+	script := filepath.Join(root, "capture.ps1")
+	if err := os.WriteFile(script, []byte("[Console]::Write(($env:AO_SESSION_ID + '|' + $env:AO_DATA_DIR + '|' + $env:AO_RUN_FILE)); exit 0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := ports.WorkspaceHookConfig{SessionID: "worker-1", DataDir: filepath.Join(root, "user's $data & files")}
+	runfile := filepath.Join(root, "user's running.json")
+	t.Setenv(aoRunFileEnvVar, runfile)
+	command := museWindowsCommand(cfg, "powershell.exe", "-NoProfile -File '"+strings.ReplaceAll(script, "'", "''")+"'")
+	parts := strings.Fields(command)
+	output, err := exec.Command(parts[0], parts[1:]...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("hook failed: %v: %s", err, output)
+	}
+	if string(output) != cfg.SessionID+"|"+cfg.DataDir+"|"+runfile {
+		t.Fatalf("routing changed: %s", output)
 	}
 }
 

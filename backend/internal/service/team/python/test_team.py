@@ -50,10 +50,39 @@ class TeamTests(unittest.TestCase):
         for message in self.action("inbox", actor=actor):
             self.action("ack", {"message": message["id"]}, actor)
 
+    def test_enable_uses_environment_without_persisting_machine_path(self):
+        project = self.root / "environment-project"
+        project.mkdir()
+        memory = self.root / "environment-memory"
+        request = self.request | {"project_id": "environment-project", "project_path": str(project),
+                                  "state_path": str(self.root / "environment-state"), "operation": "enable", "arguments": {}}
+        with patch.dict(os.environ, {"LLMWIKI_MEMORY_ROOT": str(memory)}):
+            team = Team(request)
+            self.assertTrue(team.execute()["enabled"])
+            self.assertEqual(team.wiki().memory_root, memory)
+            with team.store.connect() as db:
+                self.assertIsNone(db.execute("SELECT value FROM settings WHERE key='memory_root'").fetchone())
+        self.assertNotIn("memory_root", json.loads((project / ".llmwiki.json").read_text()))
+
+    def test_explicit_memory_root_overrides_environment(self):
+        with patch.dict(os.environ, {"LLMWIKI_MEMORY_ROOT": str(self.root / "other-memory")}):
+            team = Team(self.request)
+            self.assertEqual(team.wiki().memory_root, self.memory)
+
     def planner(self):
         self.action("agent-add", {"agent": "planner", "role": "planner", "mode": "chat"})
         Team(self.request | {"operation": "attach", "arguments": {"agent": "planner", "session_id": "session-planner"}}).execute()
         self.clear_mail("planner")
+
+    def test_muse_workers_use_the_same_mailbox_memory_and_lifecycle_contract(self):
+        self.action("agent-add", {"agent": "muse-worker", "role": "worker", "parent": "chief", "provider": "muse", "mode": "tui"})
+        Team(self.request | {"operation": "attach", "arguments": {"agent": "muse-worker", "session_id": "session-muse-worker"}}).execute()
+        self.assertEqual(self.action("hook", {"event": "Stop"}, "muse-worker")["decision"], "block")
+        self.clear_mail("muse-worker")
+        self.assertEqual(self.action("hook", {"event": "Stop"}, "muse-worker"), {})
+        self.assertEqual(self.action("memory-policy", actor="muse-worker")["project_id"], Team(self.request).wiki().project_id)
+        with self.assertRaisesRegex(ContractError, "terminal interface"):
+            self.action("agent-add", {"agent": "invalid-muse", "role": "worker", "parent": "chief", "provider": "muse", "mode": "chat"})
 
     def second_chief(self):
         self.action("agent-add", {"agent": "chief-two", "role": "chief", "parent": "orch"}, "orch")

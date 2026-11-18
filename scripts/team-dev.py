@@ -1,4 +1,4 @@
-"""Run the fork's browser GUI and daemon with an independent local data directory."""
+"""Open Agent Teams on the desktop, or run browser development with --browser."""
 import argparse
 import json
 import os
@@ -66,7 +66,15 @@ def main():
     parser.add_argument("--memory-root", type=Path)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument("--browser", action="store_true", help="Run the browser/Vite development server instead of Electron")
     arguments = parser.parse_args()
+    if not arguments.browser and not arguments.no_browser and not arguments.skip_build:
+        command = [sys.executable, str(Path(__file__).with_name("team-desktop.py")),
+                   "--data-dir", str(arguments.data_dir), "--port", str(arguments.port)]
+        if arguments.memory_root:
+            command += ["--memory-root", str(arguments.memory_root)]
+        subprocess.run(command, check=True)
+        return
     check_ports([arguments.port, arguments.gui_port])
     if sys.version_info < (3, 11):
         raise RuntimeError("Use Python 3.11+ for the team runtime and llmwiki")
@@ -103,7 +111,7 @@ def main():
     children = []
     daemon = None
     runfile = state / "running.json"
-    print(f"Team development logs and state at {state}", flush=True)
+    print(f"Browser development mode. Logs and state at {state}", flush=True)
     try:
         with (state / "daemon.log").open("a", encoding="utf-8") as daemon_log, (state / "gui.log").open("a", encoding="utf-8") as gui_log:
             daemon = subprocess.Popen([str(executable), "daemon"], cwd=repository, env=environment, stdout=daemon_log, stderr=daemon_log, **options)
@@ -112,7 +120,7 @@ def main():
                        identity=lambda: owns_runfile(runfile, daemon, arguments.port))
             gui = subprocess.Popen([node, str(vite), "--config", "vite.renderer.config.ts", "--host", "127.0.0.1", "--port", str(arguments.gui_port), "--strictPort"], cwd=repository / "frontend", env=environment, stdout=gui_log, stderr=gui_log, **options)
             children.append(gui)
-            url = f"http://127.0.0.1:{arguments.gui_port}/teams"
+            url = f"http://127.0.0.1:{arguments.gui_port}/#/teams"
             wait_ready(url, gui)
             print(f"Project teams at {url}", flush=True)
             if not arguments.no_browser:

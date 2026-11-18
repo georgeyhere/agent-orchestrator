@@ -39,8 +39,10 @@ One coding agent can handle a task. Running several means splitting the work, ke
 
 [Project teams](docs/team-workflow.md) adds project planners, editable org charts,
 mission chiefs, custom roles, orchestrator signoff, persistent Python mail, and llmwiki/datashard
-integration. Run `python scripts/team-dev.py` for the local browser GUI after
-installing the prerequisites in that guide.
+integration. Run `python scripts/team-desktop.py --build` once, then
+`python scripts/team-desktop.py` for the native Electron desktop app. On Windows,
+add `--shortcut` to create an Agent Teams desktop shortcut. See the guide for
+prerequisites and browser development mode.
 
 ## Features
 

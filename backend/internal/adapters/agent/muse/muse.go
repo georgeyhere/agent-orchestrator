@@ -195,6 +195,7 @@ var museBinarySpec = binaryutil.BinarySpec{
 		{".local", "bin", "muse"}, // official Meta installer default
 	},
 	WinPaths: []binaryutil.WinPath{
+		{Base: binaryutil.WinLocalAppData, Parts: []string{"Programs", "muse", "muse.cmd"}},
 		{Base: binaryutil.WinAppData, Parts: []string{"npm", "muse.cmd"}},
 		{Base: binaryutil.WinAppData, Parts: []string{"npm", "muse.exe"}},
 	},

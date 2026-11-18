@@ -7,6 +7,7 @@ import { Input } from "./ui/input";
 import { PageTopbar, PageTopbarTitle } from "./PageTopbar";
 import { TeamPlanning } from "./TeamPlanning";
 import { TeamOrgChart } from "./TeamOrgChart";
+import { aoBridge } from "../lib/bridge";
 
 type Role = { id: string; tier: string; instructions: string };
 export type Agent = {
@@ -123,11 +124,14 @@ function Evidence({ item }: { item: Mission | Task }) {
 export function TeamView() {
 	const queryClient = useQueryClient();
 	const [projectId, setProjectId] = useState("");
-	const [tab, setTab] = useState<"org" | "planning" | "agents" | "missions" | "mail">("org");
+	const [tab, setTab] = useState<"org" | "planning" | "agents" | "workers" | "missions" | "mail">("org");
 	const [editor, setEditor] = useState<Editor | null>(null);
 	const [actionError, setActionError] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [role, setRole] = useState("worker");
+	const [provider, setProvider] = useState("codex");
+	const [addingProject, setAddingProject] = useState(false);
+	const [projectPath, setProjectPath] = useState("");
 	const projects = useQuery({
 		queryKey: ["team-projects"],
 		queryFn: async () => {
@@ -152,12 +156,36 @@ export function TeamView() {
 		},
 	});
 	const state = team.data;
+	async function addProject(event: FormEvent<HTMLFormElement>) {
+		event.preventDefault();
+		setBusy(true);
+		setActionError("");
+		try {
+			const { data, error } = await apiClient.POST("/api/v1/projects", {
+				body: { path: projectPath.trim() },
+			});
+			if (error) throw new Error(apiErrorMessage(error));
+			if (!data?.project) throw new Error("Project registration did not return a project");
+			setProjectId(data.project.id);
+			setEditor("enable");
+			setAddingProject(false);
+			setProjectPath("");
+			await queryClient.invalidateQueries({ queryKey: ["team-projects"] });
+			await queryClient.invalidateQueries({ queryKey: ["workspaces"] });
+		} catch (error) {
+			setActionError(error instanceof Error ? error.message : "Could not add project");
+		} finally {
+			setBusy(false);
+		}
+	}
 	async function execute(operation: string, arguments_: Record<string, unknown>) {
 		setBusy(true);
 		setActionError("");
 		try {
 			await teamAction(projectId, operation, arguments_);
-			await queryClient.invalidateQueries({ queryKey: ["project-team", projectId] });
+			await queryClient.invalidateQueries({
+				queryKey: ["project-team", projectId],
+			});
 			setEditor(null);
 			return true;
 		} catch (error) {
@@ -171,7 +199,12 @@ export function TeamView() {
 	const fields: Record<Editor, Field[]> = {
 		"agent-add": [
 			{ name: "agent", label: "Agent ID" },
-			{ name: "role", label: "Role", options: state?.roles.map((item) => item.id) ?? [] },
+			{ name: "provider", label: "Agent provider", options: ["codex", "muse"] },
+			{
+				name: "role",
+				label: "Role",
+				options: state?.roles.map((item) => item.id) ?? [],
+			},
 			...(["orchestrator", "planner"].includes(roleTier)
 				? []
 				: [
@@ -184,11 +217,19 @@ export function TeamView() {
 									.map((item) => item.id) ?? [],
 						},
 					]),
-			{ name: "mode", label: "Agent interface", options: roleTier === "planner" ? ["chat", "tui"] : ["tui", "chat"] },
+			{
+				name: "mode",
+				label: "Agent interface",
+				options: provider === "muse" ? ["tui"] : roleTier === "planner" ? ["chat", "tui"] : ["tui", "chat"],
+			},
 		],
 		"role-add": [
 			{ name: "role", label: "Role ID" },
-			{ name: "tier", label: "Hierarchy tier", options: ["worker", "chief", "orchestrator", "planner"] },
+			{
+				name: "tier",
+				label: "Hierarchy tier",
+				options: ["worker", "chief", "orchestrator", "planner"],
+			},
 			{ name: "instructions", label: "Role instructions", multiline: true },
 		],
 		"mission-create": [
@@ -216,12 +257,20 @@ export function TeamView() {
 			{ name: "objective", label: "Task objective", multiline: true },
 		],
 		send: [
-			{ name: "recipient", label: "Recipient", options: state?.agents.map((item) => item.id) ?? [] },
+			{
+				name: "recipient",
+				label: "Recipient",
+				options: state?.agents.map((item) => item.id) ?? [],
+			},
 			{ name: "subject", label: "Subject" },
 			{ name: "body", label: "Message", multiline: true },
 		],
 		enable: [
-			{ name: "memory_root", label: "Datashard directory (optional, uses the configured memory root)", optional: true },
+			{
+				name: "memory_root",
+				label: "Datashard directory override (optional)",
+				optional: true,
+			},
 		],
 	};
 	const titles: Record<Editor, string> = {
@@ -235,6 +284,7 @@ export function TeamView() {
 	function edit(operation: Editor) {
 		setActionError("");
 		setRole("worker");
+		setProvider("codex");
 		setEditor(operation);
 	}
 	function submit(event: FormEvent<HTMLFormElement>) {
@@ -242,7 +292,6 @@ export function TeamView() {
 		if (!editor) return;
 		const arguments_: Record<string, unknown> = Object.fromEntries(new FormData(event.currentTarget));
 		if (editor === "agent-add") {
-			arguments_.provider = "codex";
 			if (!arguments_.parent) arguments_.parent = null;
 		}
 		if (editor === "send") arguments_.key = crypto.randomUUID();
@@ -276,6 +325,15 @@ export function TeamView() {
 							))}
 						</select>
 					</label>
+					<Button
+						variant="outline"
+						onClick={() => {
+							setAddingProject(true);
+							setActionError("");
+						}}
+					>
+						Add project
+					</Button>
 					{state?.enabled && (
 						<>
 							<Button onClick={() => edit("agent-add")}>Spawn agent</Button>
@@ -308,15 +366,78 @@ export function TeamView() {
 						{error}
 					</p>
 				)}
-				{!projects.isPending && !projects.data?.length && (
-					<p className="text-sm text-muted-foreground">Add a local project to create its team.</p>
+				<section className="mb-5 rounded-lg border p-5" aria-label="Team workflow">
+					<h2 className="font-medium">Plan missions and organize your agents</h2>
+					<ol className="mt-3 grid gap-4 text-sm md:grid-cols-3">
+						<li>
+							<strong>1. Plan with your project planner</strong>
+							<p className="mt-1 text-muted-foreground">
+								Discuss goals, acceptance criteria, and a mission plan. Release the draft when you are ready.
+							</p>
+						</li>
+						<li>
+							<strong>2. Build your org chart</strong>
+							<p className="mt-1 text-muted-foreground">
+								Assign chiefs to an orchestrator and workers to chiefs. Each mission has a responsible chief.
+							</p>
+						</li>
+						<li>
+							<strong>3. Execute and review</strong>
+							<p className="mt-1 text-muted-foreground">
+								Track missions and worker tasks. Chiefs submit results; the orchestrator gives final signoff.
+							</p>
+						</li>
+					</ol>
+				</section>
+				{(addingProject || (!projects.isPending && !projects.data?.length)) && (
+					<form onSubmit={addProject} className="mb-5 max-w-2xl rounded-lg border p-5">
+						<h2 className="mb-2 font-medium">Add a local project</h2>
+						<p className="mb-4 text-sm text-muted-foreground">
+							Choose an existing Git repository with an initial commit, then enable its project team.
+						</p>
+						<label className="block text-sm">
+							Project folder
+							<Input
+								required
+								value={projectPath}
+								onChange={(event) => setProjectPath(event.target.value)}
+								className="mt-1"
+							/>
+						</label>
+						<div className="mt-4 flex gap-2">
+							{window.ao && (
+								<Button
+									type="button"
+									variant="outline"
+									onClick={async () => {
+										try {
+											const path = await aoBridge.app.chooseDirectory("Choose a project repository");
+											if (path) setProjectPath(path);
+										} catch (error) {
+											setActionError(error instanceof Error ? error.message : "Could not choose folder");
+										}
+									}}
+								>
+									Browse folders
+								</Button>
+							)}
+							<Button type="submit" disabled={busy}>
+								{busy ? "Adding project…" : "Add project folder"}
+							</Button>
+							{addingProject && (
+								<Button type="button" variant="ghost" onClick={() => setAddingProject(false)}>
+									Cancel
+								</Button>
+							)}
+						</div>
+					</form>
 				)}
 				{projectId && state && !state.enabled && !editor && (
 					<section className="max-w-2xl rounded-lg border p-6">
 						<h2 className="mb-2 font-medium">Create a project team</h2>
 						<p className="mb-4 text-sm text-muted-foreground">
-							Connect this project to llmwiki/datashard, then spawn an orchestrator, mission chiefs, and workers.
-							Enabling creates a memory binding when the project needs one.
+							Connect this project to llmwiki/datashard, then create a planner, an orchestrator, mission chiefs, and
+							workers. Enabling creates a memory binding when the project needs one.
 						</p>
 						<Button onClick={() => edit("enable")}>Enable team</Button>
 					</section>
@@ -324,6 +445,12 @@ export function TeamView() {
 				{editor && (
 					<form key={editor + projectId} onSubmit={submit} className="mb-6 max-w-2xl rounded-lg border p-5">
 						<h2 className="mb-4 font-medium">{titles[editor]}</h2>
+						{editor === "enable" && (
+							<p className="mb-4 text-sm text-muted-foreground">
+								Uses the system environment variable <code>LLMWIKI_MEMORY_ROOT</code> by default. Leave the override
+								blank to use it. If unset, llmwiki uses its standard memory location.
+							</p>
+						)}
 						<div className="space-y-4">
 							{fields[editor].map((field) => (
 								<label key={field.name} className="block text-sm">
@@ -333,11 +460,22 @@ export function TeamView() {
 											name={field.name}
 											required
 											className="mt-1 block w-full rounded-md border bg-background p-2"
-											value={field.name === "role" && editor === "agent-add" ? role : undefined}
+											key={field.name === "mode" ? provider + roleTier : field.name}
+											value={
+												editor === "agent-add"
+													? field.name === "role"
+														? role
+														: field.name === "provider"
+															? provider
+															: undefined
+													: undefined
+											}
 											onChange={
 												field.name === "role" && editor === "agent-add"
 													? (event) => setRole(event.target.value)
-													: undefined
+													: field.name === "provider" && editor === "agent-add"
+														? (event) => setProvider(event.target.value)
+														: undefined
 											}
 										>
 											{field.options.map((value) => (
@@ -371,7 +509,7 @@ export function TeamView() {
 				{state?.enabled && (
 					<>
 						<div className="mb-5 flex flex-wrap gap-2" role="tablist" aria-label="Project team">
-							{(["org", "planning", "agents", "missions", "mail"] as const).map((item) => (
+							{(["org", "planning", "missions", "workers", "agents", "mail"] as const).map((item) => (
 								<Button
 									key={item}
 									role="tab"
@@ -380,9 +518,14 @@ export function TeamView() {
 									onClick={() => setTab(item)}
 								>
 									{
-										{ org: "Org chart", planning: "Planning", agents: "Agents", missions: "Missions", mail: "Mailbox" }[
-											item
-										]
+										{
+											org: "Org chart",
+											planning: "Planning",
+											agents: "Agents",
+											workers: "Workers",
+											missions: "Missions",
+											mail: "Mailbox",
+										}[item]
 									}
 								</Button>
 							))}
@@ -393,7 +536,7 @@ export function TeamView() {
 						{tab === "planning" && (
 							<TeamPlanning key={projectId} projectId={projectId} state={state} busy={busy} onAction={execute} />
 						)}
-						{tab === "agents" && (
+						{(tab === "agents" || tab === "workers") && (
 							<>
 								{!state.agents.length && (
 									<p className="text-sm text-muted-foreground">
@@ -401,58 +544,80 @@ export function TeamView() {
 									</p>
 								)}
 								<div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-									{state.agents.map((agent) => (
-										<article key={agent.id} className="rounded-lg border p-4">
-											<div className="flex justify-between gap-3">
-												<h2 className="font-medium">{agent.id}</h2>
-												<span className="text-xs text-muted-foreground">
-													{agent.enabled ? (agent.session_id ? "Attached" : "Launch queued") : "Paused"}
-												</span>
-											</div>
-											<p className="mt-2 text-sm text-muted-foreground">
-												{agent.tier} · {agent.role} · Codex
-											</p>
-											<p className="mt-1 text-sm">Supervisor {agent.parent ?? "project"}</p>
-											<p className="mt-2 text-sm">{state.pending[agent.id] ?? 0} pending messages</p>
-											{agent.launch_error && <p className="mt-2 text-sm text-destructive">{agent.launch_error}</p>}
-											<div className="mt-4 flex flex-wrap gap-2">
-												{agent.session_id && (
-													<Button asChild variant="outline" size="sm">
-														<Link
-															to="/projects/$projectId/sessions/$sessionId"
-															params={{ projectId, sessionId: agent.session_id }}
-														>
-															Open session
-														</Link>
-													</Button>
-												)}
-												<Button
-													size="sm"
-													variant="ghost"
-													disabled={busy}
-													onClick={() =>
-														void execute("agent-control", {
-															agent: agent.id,
-															action: agent.enabled ? "pause" : "resume",
-														})
-													}
-												>
-													{agent.enabled ? "Pause dispatch" : "Resume"}
-												</Button>
-												{agent.session_id && agent.enabled ? (
+									{state.agents
+										.filter((agent) => tab !== "workers" || agent.tier === "worker")
+										.map((agent) => (
+											<article key={agent.id} className="rounded-lg border p-4">
+												<div className="flex justify-between gap-3">
+													<h2 className="font-medium">{agent.id}</h2>
+													<span className="text-xs text-muted-foreground">
+														{agent.enabled ? (agent.session_id ? "Attached" : "Launch queued") : "Paused"}
+													</span>
+												</div>
+												<p className="mt-2 text-sm text-muted-foreground">
+													{agent.tier} · {agent.role} · {agent.provider === "muse" ? "Muse" : "Codex"}
+												</p>
+												<p className="mt-1 text-sm">Supervisor {agent.parent ?? "project"}</p>
+												{state.tasks
+													.filter((task) => task.worker === agent.id && task.status !== "accepted")
+													.map((task) => (
+														<p key={task.id} className="mt-2 text-sm">
+															Task {task.id} / mission {task.mission} / {task.status}
+														</p>
+													))}
+												<p className="mt-2 text-sm">{state.pending[agent.id] ?? 0} pending messages</p>
+												{agent.launch_error && <p className="mt-2 text-sm text-destructive">{agent.launch_error}</p>}
+												<div className="mt-4 flex flex-wrap gap-2">
+													{agent.session_id && (
+														<Button asChild variant="outline" size="sm">
+															<Link
+																to="/projects/$projectId/sessions/$sessionId"
+																params={{
+																	projectId,
+																	sessionId: agent.session_id,
+																}}
+															>
+																Open session
+															</Link>
+														</Button>
+													)}
 													<Button
 														size="sm"
 														variant="ghost"
 														disabled={busy}
-														onClick={() => void execute("agent-control", { agent: agent.id, action: "cancel" })}
+														onClick={() =>
+															void execute("agent-control", {
+																agent: agent.id,
+																action: agent.enabled ? "pause" : "resume",
+															})
+														}
 													>
-														Stop agent
+														{agent.enabled ? "Pause dispatch" : "Resume"}
 													</Button>
-												) : null}
-											</div>
-										</article>
-									))}
+													{agent.session_id && agent.enabled ? (
+														<Button
+															size="sm"
+															variant="ghost"
+															disabled={busy}
+															onClick={() =>
+																void execute("agent-control", {
+																	agent: agent.id,
+																	action: "cancel",
+																})
+															}
+														>
+															Stop agent
+														</Button>
+													) : null}
+												</div>
+											</article>
+										))}
 								</div>
+								{tab === "workers" && !state.agents.some((agent) => agent.tier === "worker") && (
+									<p className="text-sm text-muted-foreground">
+										No workers yet. Use Spawn agent to add a worker under its chief.
+									</p>
+								)}
 								<h2 className="mb-3 mt-7 font-medium">Role definitions</h2>
 								<div className="grid gap-3 lg:grid-cols-2">
 									{state.roles.map((item) => (

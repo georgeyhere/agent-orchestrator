@@ -22,10 +22,18 @@ vi.mock("./PageTopbar", () => ({
 const initial: TeamState = {
 	enabled: true,
 	roles: [
-		{ id: "orchestrator", tier: "orchestrator", instructions: "Sign off missions" },
+		{
+			id: "orchestrator",
+			tier: "orchestrator",
+			instructions: "Sign off missions",
+		},
 		{ id: "chief", tier: "chief", instructions: "Drive workers" },
 		{ id: "worker", tier: "worker", instructions: "Implement tasks" },
-		{ id: "planner", tier: "planner", instructions: "Plan missions with the user" },
+		{
+			id: "planner",
+			tier: "planner",
+			instructions: "Plan missions with the user",
+		},
 	],
 	agents: [
 		{
@@ -59,7 +67,9 @@ const initial: TeamState = {
 };
 
 function mount() {
-	const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+	const client = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
 	render(
 		<QueryClientProvider client={client}>
 			<TeamView />
@@ -111,18 +121,131 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("project teams", () => {
-	it("creates a project planner in chat mode without a supervisor", async () => {
+	it("spawns Muse workers through the terminal interface", async () => {
 		mount();
-		fireEvent.click(await screen.findByRole("button", { name: "Create planner" }));
-		expect(screen.queryByLabelText("Supervisor")).not.toBeInTheDocument();
-		fireEvent.change(screen.getByLabelText("Agent ID"), { target: { value: "planner-one" } });
+		fireEvent.click(await screen.findByRole("button", { name: "Spawn agent" }));
+		fireEvent.change(screen.getByLabelText("Agent provider"), {
+			target: { value: "muse" },
+		});
+		expect(screen.getByLabelText("Agent interface")).toHaveValue("tui");
+		expect(
+			within(screen.getByLabelText("Agent interface")).queryByRole("option", {
+				name: "chat",
+			}),
+		).not.toBeInTheDocument();
+		fireEvent.change(screen.getByLabelText("Agent ID"), {
+			target: { value: "muse-worker" },
+		});
 		fireEvent.click(screen.getByRole("button", { name: "Save" }));
 		await waitFor(() =>
 			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
 				params: { path: { projectId: "project" } },
 				body: {
 					operation: "agent-add",
-					arguments: { agent: "planner-one", role: "planner", parent: null, mode: "chat", provider: "codex" },
+					arguments: {
+						agent: "muse-worker",
+						role: "worker",
+						parent: "chief-one",
+						provider: "muse",
+						mode: "tui",
+					},
+				},
+			}),
+		);
+	});
+	it("registers a project from a typed folder and opens team setup", async () => {
+		mocks.get.mockImplementation(async (path: string) =>
+			path === "/api/v1/projects"
+				? { data: { projects: [] } }
+				: { data: { result: { ...structuredClone(initial), enabled: false } } },
+		);
+		mocks.post.mockResolvedValue({ data: { project: { id: "new-project" } } });
+		mount();
+		fireEvent.change(await screen.findByLabelText("Project folder"), {
+			target: { value: "C:\\projects\\example" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Add project folder" }));
+		expect(await screen.findByRole("heading", { name: "Enable project team" })).toBeInTheDocument();
+		expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects", {
+			body: { path: "C:\\projects\\example" },
+		});
+		expect(screen.getByText("LLMWIKI_MEMORY_ROOT")).toBeInTheDocument();
+		expect(screen.getByText("2. Build your org chart")).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
+				params: { path: { projectId: "new-project" } },
+				body: { operation: "enable", arguments: {} },
+			}),
+		);
+	});
+
+	it("keeps the project folder and shows registration failures", async () => {
+		mocks.get.mockResolvedValue({ data: { projects: [] } });
+		mocks.post.mockResolvedValue({
+			error: { message: "Git repository needs an initial commit" },
+		});
+		mount();
+		fireEvent.change(await screen.findByLabelText("Project folder"), {
+			target: { value: "C:\\projects\\empty" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Add project folder" }));
+		expect(await screen.findByRole("alert")).toHaveTextContent("Git repository needs an initial commit");
+		expect(screen.getByLabelText("Project folder")).toHaveValue("C:\\projects\\empty");
+	});
+	it("shows workers, assigned missions, and their session controls in a dedicated view", async () => {
+		const state = structuredClone(initial);
+		state.agents.push({
+			...state.agents[1],
+			id: "worker-one",
+			tier: "worker",
+			role: "worker",
+			parent: "chief-one",
+			session_id: "project-5",
+		});
+		state.tasks.push({
+			id: "verify-export",
+			mission: "export",
+			worker: "worker-one",
+			objective: "Verify report exports",
+			status: "review",
+			revision: 2,
+			result: "Verified",
+			evidence: "Tests pass",
+			review: null,
+		});
+		serve(state);
+		mount();
+		fireEvent.click(await screen.findByRole("tab", { name: "Workers" }));
+		expect(screen.getByRole("heading", { name: "worker-one" })).toBeInTheDocument();
+		expect(screen.queryByRole("heading", { name: "orch" })).not.toBeInTheDocument();
+		expect(screen.getByText("Task verify-export / mission export / review")).toBeInTheDocument();
+		expect(screen.getByRole("link", { name: "Open session" })).toHaveAttribute(
+			"href",
+			"/projects/project/sessions/project-5",
+		);
+		expect(screen.getByRole("button", { name: "Stop agent" })).toBeInTheDocument();
+	});
+	it("creates a project planner in chat mode without a supervisor", async () => {
+		mount();
+		fireEvent.click(await screen.findByRole("button", { name: "Create planner" }));
+		expect(screen.queryByLabelText("Supervisor")).not.toBeInTheDocument();
+		fireEvent.change(screen.getByLabelText("Agent ID"), {
+			target: { value: "planner-one" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
+				params: { path: { projectId: "project" } },
+				body: {
+					operation: "agent-add",
+					arguments: {
+						agent: "planner-one",
+						role: "planner",
+						parent: null,
+						mode: "chat",
+						provider: "codex",
+					},
 				},
 			}),
 		);
@@ -134,8 +257,12 @@ describe("project teams", () => {
 		fireEvent.click(await screen.findByRole("button", { name: "Work with planner" }));
 		expect(screen.getByRole("link", { name: "Open planner conversation" })).toBeInTheDocument();
 		fireEvent.click(screen.getByRole("button", { name: "Request mission planning" }));
-		fireEvent.change(screen.getByLabelText("Draft ID"), { target: { value: "new-goal" } });
-		fireEvent.change(screen.getByLabelText("Mission objective"), { target: { value: "Explore export requirements" } });
+		fireEvent.change(screen.getByLabelText("Draft ID"), {
+			target: { value: "new-goal" },
+		});
+		fireEvent.change(screen.getByLabelText("Mission objective"), {
+			target: { value: "Explore export requirements" },
+		});
 		fireEvent.click(screen.getByRole("button", { name: "Save draft" }));
 		await waitFor(() =>
 			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
@@ -162,7 +289,10 @@ describe("project teams", () => {
 		await waitFor(() =>
 			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
 				params: { path: { projectId: "project" } },
-				body: { operation: "draft-release", arguments: { draft: "csv-export", revision: 7 } },
+				body: {
+					operation: "draft-release",
+					arguments: { draft: "csv-export", revision: 7 },
+				},
 			}),
 		);
 	});
@@ -179,7 +309,9 @@ describe("project teams", () => {
 
 	it("preserves draft edits when a newer planner revision conflicts", async () => {
 		serve(plannedState());
-		mocks.post.mockResolvedValue({ error: { message: "Draft changed. Read its latest revision" } });
+		mocks.post.mockResolvedValue({
+			error: { message: "Draft changed. Read its latest revision" },
+		});
 		mount();
 		fireEvent.click(await screen.findByRole("tab", { name: "Planning" }));
 		fireEvent.click(screen.getByRole("button", { name: "Edit draft csv-export" }));
@@ -228,11 +360,15 @@ describe("project teams", () => {
 		});
 		serve(state);
 		mount();
-		const chief = await screen.findByRole("article", { name: "Chief chief-one" });
+		const chief = await screen.findByRole("article", {
+			name: "Chief chief-one",
+		});
 		expect(within(chief).getByText("export / active")).toBeInTheDocument();
 		expect(within(chief).getByText("worker-one / worker")).toBeInTheDocument();
 		fireEvent.click(within(chief).getByRole("button", { name: "Transfer mission export" }));
-		fireEvent.change(screen.getByLabelText("New chief"), { target: { value: "chief-two" } });
+		fireEvent.change(screen.getByLabelText("New chief"), {
+			target: { value: "chief-two" },
+		});
 		fireEvent.click(screen.getByRole("checkbox"));
 		fireEvent.click(screen.getByRole("button", { name: "Save assignment" }));
 		await waitFor(() =>
@@ -240,7 +376,12 @@ describe("project teams", () => {
 				params: { path: { projectId: "project" } },
 				body: {
 					operation: "mission-reassign",
-					arguments: { mission: "export", chief: "chief-two", revision: 3, move_workers: true },
+					arguments: {
+						mission: "export",
+						chief: "chief-two",
+						revision: 3,
+						move_workers: true,
+					},
 				},
 			}),
 		);
@@ -250,17 +391,33 @@ describe("project teams", () => {
 		const state = structuredClone(initial);
 		state.agents.push(
 			{ ...state.agents[1], id: "chief-two" },
-			{ ...state.agents[1], id: "worker-one", tier: "worker", role: "worker", parent: "chief-one", revision: 4 },
+			{
+				...state.agents[1],
+				id: "worker-one",
+				tier: "worker",
+				role: "worker",
+				parent: "chief-one",
+				revision: 4,
+			},
 		);
 		serve(state);
 		mount();
 		fireEvent.click(await screen.findByRole("button", { name: "Move worker worker-one" }));
-		fireEvent.change(screen.getByLabelText("New chief"), { target: { value: "chief-two" } });
+		fireEvent.change(screen.getByLabelText("New chief"), {
+			target: { value: "chief-two" },
+		});
 		fireEvent.click(screen.getByRole("button", { name: "Save assignment" }));
 		await waitFor(() =>
 			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
 				params: { path: { projectId: "project" } },
-				body: { operation: "agent-reparent", arguments: { agent: "worker-one", parent: "chief-two", revision: 4 } },
+				body: {
+					operation: "agent-reparent",
+					arguments: {
+						agent: "worker-one",
+						parent: "chief-two",
+						revision: 4,
+					},
+				},
 			}),
 		);
 	});
@@ -268,24 +425,36 @@ describe("project teams", () => {
 		mount();
 		await screen.findByRole("button", { name: "Spawn agent" });
 		fireEvent.click(screen.getByRole("button", { name: "Spawn agent" }));
-		fireEvent.change(screen.getByLabelText("Agent ID"), { target: { value: "worker-one" } });
+		fireEvent.change(screen.getByLabelText("Agent ID"), {
+			target: { value: "worker-one" },
+		});
 		fireEvent.click(screen.getByRole("button", { name: "Save" }));
 		await waitFor(() =>
 			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
 				params: { path: { projectId: "project" } },
 				body: {
 					operation: "agent-add",
-					arguments: { agent: "worker-one", role: "worker", parent: "chief-one", mode: "tui", provider: "codex" },
+					arguments: {
+						agent: "worker-one",
+						role: "worker",
+						parent: "chief-one",
+						mode: "tui",
+						provider: "codex",
+					},
 				},
 			}),
 		);
 	});
 
 	it("shows server validation errors while preserving form input", async () => {
-		mocks.post.mockResolvedValue({ error: { message: "Chief belongs to another orchestrator" } });
+		mocks.post.mockResolvedValue({
+			error: { message: "Chief belongs to another orchestrator" },
+		});
 		mount();
 		fireEvent.click(await screen.findByRole("button", { name: "Spawn agent" }));
-		fireEvent.change(screen.getByLabelText("Agent ID"), { target: { value: "worker-one" } });
+		fireEvent.change(screen.getByLabelText("Agent ID"), {
+			target: { value: "worker-one" },
+		});
 		fireEvent.click(screen.getByRole("button", { name: "Save" }));
 		expect(await screen.findByRole("alert")).toHaveTextContent("Chief belongs to another orchestrator");
 		expect(screen.getByLabelText("Agent ID")).toHaveValue("worker-one");
