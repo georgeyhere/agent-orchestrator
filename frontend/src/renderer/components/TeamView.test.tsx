@@ -98,6 +98,7 @@ function plannedState(): TeamState {
 		id: "csv-export",
 		planner: "project-planner",
 		chief: "chief-one",
+		workers: ["worker-one"],
 		objective: "Export filtered reports",
 		criteria: "Filters preserved",
 		plan: "Inspect, implement, test",
@@ -121,6 +122,62 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("project teams", () => {
+	it("saves the selected chief and named workers in a mission spec", async () => {
+		const state = structuredClone(initial);
+		for (const id of ["worker-b", "worker-c"]) state.agents.push({ ...state.agents[1], id, tier: "worker", role: "worker", parent: "chief-one" });
+		serve(state);
+		mount();
+		fireEvent.click(await screen.findByRole("button", { name: "Define mission" }));
+		fireEvent.change(screen.getByLabelText("Responsible chief"), { target: { value: "chief-one" } });
+		fireEvent.change(screen.getByLabelText("Mission ID"), { target: { value: "staffed-export" } });
+		fireEvent.change(screen.getByLabelText("Objective"), { target: { value: "Export reports" } });
+		fireEvent.change(screen.getByLabelText("Acceptance criteria"), { target: { value: "Verified" } });
+		fireEvent.click(screen.getByRole("checkbox", { name: /worker-b/ }));
+		fireEvent.click(screen.getByRole("checkbox", { name: /worker-c/ }));
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
+			params: { path: { projectId: "project" } }, body: { operation: "mission-create", arguments: {
+				mission: "staffed-export", chief: "chief-one", objective: "Export reports", criteria: "Verified", workers: ["worker-b", "worker-c"],
+			} },
+		}));
+	});
+
+	it("requires a worker roster before releasing a complete planning draft", async () => {
+		const state = plannedState(); state.drafts[0].workers = [];
+		serve(state); mount();
+		fireEvent.click(await screen.findByRole("tab", { name: "Planning" }));
+		expect(screen.getByRole("button", { name: "Release mission csv-export" })).toBeDisabled();
+		expect(screen.getByText("Assigned workers: Unassigned")).toBeInTheDocument();
+	});
+
+	it("offers only the selected mission's staffed workers when assigning a task", async () => {
+		const state = structuredClone(initial);
+		for (const [id, worker] of [["first", "worker-b"], ["second", "worker-c"]]) state.missions.push({ id, chief: "chief-one", workers: [worker], orchestrator: "orch", objective: "Deliver", criteria: "Verify", status: "active", revision: 1, result: null, evidence: null, review: null });
+		serve(state); mount();
+		fireEvent.click(await screen.findByRole("tab", { name: "Missions" }));
+		fireEvent.click(screen.getByRole("button", { name: "Assign worker task" }));
+		expect(screen.getByLabelText("Worker")).toHaveValue("worker-b");
+		fireEvent.change(screen.getByLabelText("Mission"), { target: { value: "second" } });
+		expect(screen.getByLabelText("Worker")).toHaveValue("worker-c");
+		expect(within(screen.getByLabelText("Worker")).queryByRole("option", { name: "worker-b" })).not.toBeInTheDocument();
+	});
+
+	it("revises a mission roster with its current revision and preserves a conflicting edit", async () => {
+		const state = plannedState();
+		for (const id of ["worker-b", "worker-c"]) state.agents.push({ ...state.agents[1], id, tier: "worker", role: "worker", parent: "chief-one" });
+		state.missions.push({ id: "staffed", chief: "chief-one", workers: ["worker-b"], orchestrator: "orch", objective: "Deliver", criteria: "Verified", status: "active", revision: 4, result: null, evidence: null, review: null });
+		serve(state); mount();
+		fireEvent.click(await screen.findByRole("tab", { name: "Missions" }));
+		fireEvent.click(screen.getByRole("button", { name: "Edit staffing for staffed" }));
+		fireEvent.click(screen.getByRole("checkbox", { name: /worker-c/ }));
+		mocks.post.mockResolvedValue({ error: { message: "Mission changed" } });
+		fireEvent.click(screen.getByRole("button", { name: "Save staffing" }));
+		expect(await screen.findByRole("alert")).toHaveTextContent("Mission changed");
+		expect(screen.getByRole("checkbox", { name: /worker-c/ })).toBeChecked();
+		expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
+			params: { path: { projectId: "project" } }, body: { operation: "mission-staff", arguments: { mission: "staffed", revision: 4, workers: ["worker-b", "worker-c"] } },
+		});
+	});
 	it("spawns Muse workers through the terminal interface", async () => {
 		mount();
 		fireEvent.click(await screen.findByRole("button", { name: "Spawn agent" }));
@@ -275,6 +332,7 @@ describe("project teams", () => {
 						criteria: "",
 						plan: "",
 						chief: null,
+						workers: [],
 					},
 				},
 			}),

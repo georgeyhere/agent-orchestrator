@@ -84,11 +84,11 @@ export function TeamOrgChart({
 					{mission && (
 						<label className="flex gap-2 text-sm">
 							<input type="checkbox" name="move_workers" />
-							Move workers with unfinished tasks to the new chief
+							Move the mission's entire worker roster to the new chief
 						</label>
 					)}
 					<p className="text-xs text-muted-foreground">
-						An individual worker can move after its unfinished task is completed. Transfer an active mission with its
+						An individual worker can move after its work and open mission staffing are cleared. Transfer a mission with its
 						workers to preserve ongoing task and review ownership.
 					</p>
 					<div className="flex gap-2">
@@ -149,6 +149,7 @@ export function TeamOrgChart({
 										{item.id} / {item.status}
 									</p>
 									<p className="mt-1 text-sm">{item.objective}</p>
+									<p className="mt-1 text-xs">Staffed workers: {item.workers?.join(", ") || "Unassigned"}</p>
 									{["active", "blocked"].includes(item.status) && chiefs.length > 1 && (
 										<Button
 											variant="ghost"

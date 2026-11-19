@@ -117,6 +117,29 @@ native conversation. Open session uses AO's existing conversation or terminal UI
 
 ## Configure the project organization
 
+Mission specs explicitly record `chief` and `workers` (a list of agent IDs).
+In Planning, choose the responsible chief and check the named workers under
+Mission staffing. A draft can stay incomplete while you discuss the goal, but
+release requires a chief and at least one worker reporting to it. The released
+mission preserves that roster. Direct mission creation requires the same staffing.
+
+Chiefs can assign execution tasks only to that mission's listed workers. Project
+membership alone does not grant task eligibility. A worker can be staffed on
+several missions under the same chief, but can have only one unfinished task.
+Missions display their staffing even before tasks exist, and the org chart lists
+the roster beside each mission. Use Edit staffing on a current active or blocked
+mission to change the roster; existing unfinished tasks prevent removing their
+worker. Staffing edits require the operator or assigned orchestrator and the
+current mission revision. CLI/API: `mission-staff(mission,revision,workers)`.
+
+Transferring a mission moves the entire roster, including workers with no task
+yet, when explicitly selected. A worker staffed on another open mission cannot
+move until its other staffing is revised. Workers staffed on open missions cannot
+be moved individually. Existing task assignments are retained during migration and
+used to populate legacy mission rosters. Legacy drafts with no roster require
+staffing before release; legacy missions with no tasks require staffing before
+new task assignment. No workers are inferred from the org chart.
+
 The Org chart tab is the project's saved organization. It shows the planner and
 orchestrator at project level, each chief under its orchestrator, the chief's
 missions, and the workers reporting to that chief with their unfinished tasks.

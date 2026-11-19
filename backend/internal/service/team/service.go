@@ -200,6 +200,7 @@ var publicOperations = map[string]bool{
 	"memory-recover": true,
 	"draft-create":   true, "draft-update": true, "draft-release": true,
 	"agent-reparent": true, "mission-reassign": true,
+	"mission-staff": true,
 }
 
 func (s *Service) Execute(ctx context.Context, project domain.ProjectID, request Request) (json.RawMessage, error) {

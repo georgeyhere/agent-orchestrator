@@ -8,7 +8,7 @@ class Workflow:
     def __init__(self, store):
         self.store = store
 
-    def create_mission(self, actor, mission, chief, objective, criteria, plan=""):
+    def create_mission(self, actor, mission, chief, objective, criteria, plan="", workers=None):
         identifier(mission)
         text(objective, "objective")
         text(criteria, "acceptance criteria")
@@ -16,18 +16,22 @@ class Workflow:
             text(plan, "execution plan")
         s = self.store
         with s.connect(True) as db:
-            return self.register_mission(db, actor, mission, chief, objective, criteria, plan)
+            return self.register_mission(db, actor, mission, chief, objective, criteria, plan, workers)
 
-    def register_mission(self, db, actor, mission, chief, objective, criteria, plan=""):
+    def register_mission(self, db, actor, mission, chief, objective, criteria, plan="", workers=None):
         s = self.store
         s.require(db, actor, {"orchestrator"})
         leader = s.get(db, "agents", chief)
         if leader["tier"] != "chief" or (actor != "operator" and leader["parent"] != actor):
             raise ContractError("Assign missions to a chief under this orchestrator")
+        workers = s.validate_workers(db, workers, chief, required=True)
         db.execute("INSERT INTO missions(id,chief,orchestrator,objective,criteria,plan) VALUES (?,?,?,?,?,?)",
                    (mission, chief, leader["parent"], objective, criteria, plan))
+        s.set_workers(db, "mission", mission, workers)
         s.event(db, actor, "mission.created", {"id": mission, "chief": chief})
         s._send(db, actor, chief, f"Mission {mission}", json.dumps(s.get(db, "missions", mission)))
+        for worker in workers:
+            s._send(db, actor, worker, f"Staffed on mission {mission}", f"Chief: {chief}. Objective: {objective}. Wait for a task from your chief.")
         return s.get(db, "missions", mission)
 
     def assign_task(self, actor, task, mission, worker, objective):
@@ -43,6 +47,8 @@ class Workflow:
                 raise ContractError("Tasks can be assigned while a mission is active")
             if target["tier"] != "worker" or target["parent"] != item["chief"]:
                 raise ContractError("Task worker must belong to the mission chief")
+            if worker not in item["workers"]:
+                raise ContractError("Task worker must be explicitly staffed in the mission spec")
             busy = db.execute("SELECT 1 FROM tasks WHERE worker=? AND status!='accepted'", (worker,)).fetchone()
             if busy:
                 raise ContractError("Worker already has an unfinished task")

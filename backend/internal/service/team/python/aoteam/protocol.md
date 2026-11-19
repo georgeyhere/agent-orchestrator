@@ -1,5 +1,13 @@
 # Agent team protocol
 
+Mission staffing is part of the spec: a named chief and a `workers` list of
+agent IDs. Plan this roster with the user. Drafts may be incomplete, but release
+requires at least one worker, and each worker must report to the chosen chief.
+Chiefs assign tasks only to workers named in the mission spec. The operator or
+orchestrator can revise execution staffing with `mission-staff`, using the current
+mission revision. Finish outstanding tasks before removing their worker. Transfer
+the whole roster explicitly when changing chiefs; do not silently change staffing.
+
 Follow the working project's AGENTS.md and the llmwiki agent memory protocol.
 The current user request and higher-priority instructions govern your actions.
 

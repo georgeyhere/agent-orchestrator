@@ -25,7 +25,7 @@ class Planning:
         if chief and self.store.get(db, "agents", chief)["tier"] != "chief":
             raise ContractError("Select a mission chief")
 
-    def create(self, actor, draft, objective, criteria="", plan="", chief=None):
+    def create(self, actor, draft, objective, criteria="", plan="", chief=None, workers=None):
         identifier(draft)
         text(objective, "objective")
         if not isinstance(criteria, str) or not isinstance(plan, str) or len(criteria) > 50000 or len(plan) > 50000:
@@ -34,13 +34,15 @@ class Planning:
         with s.connect(True) as db:
             planner = self.planner(db, actor)
             self.chief(db, chief)
+            workers = s.validate_workers(db, workers if workers is not None else [], chief)
             db.execute("INSERT INTO drafts(id,planner,chief,objective,criteria,plan) VALUES (?,?,?,?,?,?)",
                        (draft, planner, chief, objective, criteria, plan))
+            s.set_workers(db, "draft", draft, workers)
             s.event(db, actor, "draft.created", {"id": draft})
             s._send(db, actor, planner, f"Plan mission {draft}", "Work with the user on this draft. Ask questions in your conversation and save the brief and plan with draft-update. Execution requires human release.\n" + json.dumps(s.get(db, "drafts", draft)))
             return s.get(db, "drafts", draft)
 
-    def update(self, actor, draft, revision, objective, criteria, plan, chief=None):
+    def update(self, actor, draft, revision, objective, criteria, plan, chief=None, workers=None):
         revision_number(revision)
         text(objective, "objective")
         if not isinstance(criteria, str) or not isinstance(plan, str) or len(criteria) > 50000 or len(plan) > 50000:
@@ -53,7 +55,9 @@ class Planning:
             if item["status"] != "draft" or item["revision"] != revision:
                 raise ContractError("Draft changed. Read its latest revision")
             self.chief(db, chief)
+            workers = s.validate_workers(db, item["workers"] if workers is None else workers, chief)
             db.execute("UPDATE drafts SET objective=?,criteria=?,plan=?,chief=?,revision=revision+1 WHERE id=?", (objective, criteria, plan, chief, draft))
+            s.set_workers(db, "draft", draft, workers)
             s.event(db, actor, "draft.updated", {"id": draft, "revision": revision + 1})
             if actor == "operator":
                 s._send(db, actor, item["planner"], f"Draft {draft} updated", json.dumps(s.get(db, "drafts", draft)))
@@ -72,7 +76,7 @@ class Planning:
             text(item["plan"], "execution plan")
             if not item["chief"]:
                 raise ContractError("Assign a chief before releasing the draft")
-            mission = self.workflow.register_mission(db, actor, draft, item["chief"], item["objective"], item["criteria"], item["plan"])
+            mission = self.workflow.register_mission(db, actor, draft, item["chief"], item["objective"], item["criteria"], item["plan"], item["workers"])
             db.execute("UPDATE drafts SET status='released',mission=?,revision=revision+1 WHERE id=?", (draft, draft))
             s.event(db, actor, "draft.released", {"id": draft, "revision": revision + 1})
             s._send(db, actor, item["planner"], f"Draft {draft} released", "The user released this mission to its chief. Preserve the approved brief; execution now belongs to the orchestrator and chief.")
@@ -92,7 +96,7 @@ class Planning:
                 raise ContractError("Both chiefs must belong to this orchestrator")
             if item["revision"] != revision:
                 raise ContractError("Org chart changed. Read the current worker revision")
-            if db.execute("SELECT 1 FROM tasks WHERE worker=? AND status!='accepted'", (agent,)).fetchone():
+            if db.execute("SELECT 1 FROM tasks WHERE worker=? AND status!='accepted'", (agent,)).fetchone() or db.execute("SELECT 1 FROM mission_workers w JOIN missions m ON m.id=w.mission WHERE w.worker=? AND m.status!='approved'", (agent,)).fetchone():
                 raise ContractError("Worker has unfinished work. Transfer its mission and workers together or finish the task first")
             if parent != item["parent"]:
                 db.execute("UPDATE agents SET parent=?,revision=revision+1 WHERE id=?", (parent, agent))
@@ -115,10 +119,12 @@ class Planning:
                 raise ContractError("Only current active or blocked missions can be reassigned")
             if chief == item["chief"]:
                 return item
-            workers = {row[0] for row in db.execute("SELECT worker FROM tasks WHERE mission=? AND status!='accepted'", (mission,))}
+            workers = set(item["workers"])
             if workers and not move_workers:
-                raise ContractError("This mission has unfinished tasks. Explicitly move its workers with it")
+                raise ContractError("This mission has staffed workers. Explicitly move its roster with it")
             for worker in workers:
+                if db.execute("SELECT 1 FROM mission_workers w JOIN missions m ON m.id=w.mission WHERE w.worker=? AND m.id!=? AND m.status!='approved'", (worker, mission)).fetchone():
+                    raise ContractError("Worker is staffed on another open mission; revise that staffing before transferring")
                 db.execute("UPDATE agents SET parent=?,revision=revision+1 WHERE id=?", (chief, worker))
                 s._send(db, actor, worker, f"Mission {mission} transferred", f"Your current task remains assigned. Your chief is now {chief}. Read current revisions before submitting.")
             db.execute("UPDATE tasks SET revision=revision+1 WHERE mission=? AND status!='accepted'", (mission,))
@@ -126,4 +132,24 @@ class Planning:
             s.event(db, actor, "mission.reassigned", {"mission": mission, "from": item["chief"], "to": chief, "workers": sorted(workers)})
             for recipient in {item["chief"], chief, item["orchestrator"]}:
                 s._send(db, actor, recipient, f"Mission {mission} reassigned", json.dumps(s.get(db, "missions", mission)))
+            return s.get(db, "missions", mission)
+
+    def staff(self, actor, mission, revision, workers):
+        revision_number(revision)
+        s = self.store
+        with s.connect(True) as db:
+            item = s.get(db, "missions", mission)
+            if actor not in {"operator", item["orchestrator"]}:
+                raise ContractError("Only the operator or mission orchestrator can change approved staffing")
+            if item["status"] not in {"active", "blocked"} or item["revision"] != revision:
+                raise ContractError("Mission changed. Staffing can be revised on current active or blocked missions")
+            workers = s.validate_workers(db, workers, item["chief"], required=True)
+            unfinished = {row[0] for row in db.execute("SELECT worker FROM tasks WHERE mission=? AND status!='accepted'", (mission,))}
+            if unfinished - set(workers):
+                raise ContractError("Finish a worker's tasks before removing it from mission staffing")
+            s.set_workers(db, "mission", mission, workers)
+            db.execute("UPDATE missions SET revision=revision+1 WHERE id=?", (mission,))
+            s.event(db, actor, "mission.staffed", {"mission": mission, "workers": workers, "revision": revision + 1})
+            for recipient in set(item["workers"]) | set(workers) | {item["chief"]}:
+                s._send(db, actor, recipient, f"Mission {mission} staffing updated", json.dumps(s.get(db, "missions", mission)))
             return s.get(db, "missions", mission)

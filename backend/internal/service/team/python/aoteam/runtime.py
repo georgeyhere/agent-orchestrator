@@ -179,7 +179,10 @@ class Team:
                 "mission-create(mission,chief,objective,criteria), task-assign(task,mission,worker,objective), "
                 "submit(kind,record,revision,result,evidence), review(kind,record,revision,approve,feedback), "
                 "send(recipient,subject,body,key), ack(message), block(kind,record,revision,reason), unblock(kind,record,revision), "
-                "draft-create(draft,objective,criteria,plan,chief), draft-update(draft,revision,objective,criteria,plan,chief), "
+                "Mission specs explicitly name the chief and workers. Tasks can only go to staffed workers. "
+                "Drafts may be incomplete; release needs at least one worker reporting to the chosen chief. "
+                "draft-create(draft,objective,criteria,plan,chief,workers), draft-update(draft,revision,objective,criteria,plan,chief,workers), "
+                "mission-create(mission,chief,objective,criteria,plan,workers), mission-staff(mission,revision,workers), "
                 "agent-reparent(agent,parent,revision), mission-reassign(mission,chief,revision,move_workers). "
                 "Drafts stay separate from execution until the human operator uses draft-release(draft,revision). "
                 "The planner collaborates with the user on the brief and plan, and cannot launch execution or give final signoff. "
@@ -337,6 +340,7 @@ class Team:
         methods = {"role-add": self.store.add_role, "agent-add": self.add_agent, "agent-control": self.control,
                    "draft-create": self.planning.create, "draft-update": self.planning.update, "draft-release": self.planning.release,
                    "agent-reparent": self.planning.reparent, "mission-reassign": self.planning.reassign,
+                   "mission-staff": self.planning.staff,
                    "mission-create": self.workflow.create_mission, "task-assign": self.workflow.assign_task,
                    "submit": self.workflow.submit, "review": self.workflow.review, "send": self.store.send, "ack": self.store.acknowledge,
                    "block": self.transition_block, "unblock": self.transition_block}

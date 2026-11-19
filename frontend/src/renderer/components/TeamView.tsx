@@ -8,6 +8,7 @@ import { PageTopbar, PageTopbarTitle } from "./PageTopbar";
 import { TeamPlanning } from "./TeamPlanning";
 import { TeamOrgChart } from "./TeamOrgChart";
 import { aoBridge } from "../lib/bridge";
+import { MissionStaffingFields } from "./MissionStaffingFields";
 
 type Role = { id: string; tier: string; instructions: string };
 export type Agent = {
@@ -22,6 +23,7 @@ export type Agent = {
 	revision: number;
 };
 export type Mission = {
+	workers?: string[];
 	id: string;
 	chief: string;
 	orchestrator: string;
@@ -66,6 +68,7 @@ export type TeamState = {
 	pending: Record<string, number>;
 };
 export type MissionDraft = {
+	workers?: string[];
 	id: string;
 	planner: string;
 	chief: string | null;
@@ -124,6 +127,8 @@ function Evidence({ item }: { item: Mission | Task }) {
 export function TeamView() {
 	const queryClient = useQueryClient();
 	const [projectId, setProjectId] = useState("");
+	const [staffingMission, setStaffingMission] = useState<Mission | null>(null);
+	const [taskMission, setTaskMission] = useState("");
 	const [tab, setTab] = useState<"org" | "planning" | "agents" | "workers" | "missions" | "mail">("org");
 	const [editor, setEditor] = useState<Editor | null>(null);
 	const [actionError, setActionError] = useState("");
@@ -196,6 +201,7 @@ export function TeamView() {
 		}
 	}
 	const roleTier = state?.roles.find((item) => item.id === role)?.tier ?? "worker";
+	const selectedTaskMission = state?.missions.find((item) => item.id === taskMission && item.status === "active") ?? state?.missions.find((item) => item.status === "active");
 	const fields: Record<Editor, Field[]> = {
 		"agent-add": [
 			{ name: "agent", label: "Agent ID" },
@@ -234,11 +240,6 @@ export function TeamView() {
 		],
 		"mission-create": [
 			{ name: "mission", label: "Mission ID" },
-			{
-				name: "chief",
-				label: "Responsible chief",
-				options: state?.agents.filter((item) => item.tier === "chief").map((item) => item.id) ?? [],
-			},
 			{ name: "objective", label: "Objective", multiline: true },
 			{ name: "criteria", label: "Acceptance criteria", multiline: true },
 		],
@@ -252,7 +253,7 @@ export function TeamView() {
 			{
 				name: "worker",
 				label: "Worker",
-				options: state?.agents.filter((item) => item.tier === "worker").map((item) => item.id) ?? [],
+				options: selectedTaskMission?.workers ?? [],
 			},
 			{ name: "objective", label: "Task objective", multiline: true },
 		],
@@ -291,6 +292,7 @@ export function TeamView() {
 		event.preventDefault();
 		if (!editor) return;
 		const arguments_: Record<string, unknown> = Object.fromEntries(new FormData(event.currentTarget));
+		if (editor === "mission-create") arguments_.workers = new FormData(event.currentTarget).getAll("workers");
 		if (editor === "agent-add") {
 			if (!arguments_.parent) arguments_.parent = null;
 		}
@@ -315,6 +317,7 @@ export function TeamView() {
 							value={projectId}
 							onChange={(event) => {
 								setProjectId(event.target.value);
+								setStaffingMission(null);
 								setEditor(null);
 							}}
 						>
@@ -445,6 +448,7 @@ export function TeamView() {
 				{editor && (
 					<form key={editor + projectId} onSubmit={submit} className="mb-6 max-w-2xl rounded-lg border p-5">
 						<h2 className="mb-4 font-medium">{titles[editor]}</h2>
+						{editor === "mission-create" && <MissionStaffingFields agents={state?.agents ?? []} />}
 						{editor === "enable" && (
 							<p className="mb-4 text-sm text-muted-foreground">
 								Uses the system environment variable <code>LLMWIKI_MEMORY_ROOT</code> by default. Leave the override
@@ -460,9 +464,9 @@ export function TeamView() {
 											name={field.name}
 											required
 											className="mt-1 block w-full rounded-md border bg-background p-2"
-											key={field.name === "mode" ? provider + roleTier : field.name}
+											key={field.name === "mode" ? provider + roleTier : field.name === "worker" ? selectedTaskMission?.id : field.name}
 											value={
-												editor === "agent-add"
+												editor === "task-assign" && field.name === "mission" ? selectedTaskMission?.id : editor === "agent-add"
 													? field.name === "role"
 														? role
 														: field.name === "provider"
@@ -471,7 +475,7 @@ export function TeamView() {
 													: undefined
 											}
 											onChange={
-												field.name === "role" && editor === "agent-add"
+												field.name === "mission" && editor === "task-assign" ? (event) => setTaskMission(event.target.value) : field.name === "role" && editor === "agent-add"
 													? (event) => setRole(event.target.value)
 													: field.name === "provider" && editor === "agent-add"
 														? (event) => setProvider(event.target.value)
@@ -508,6 +512,16 @@ export function TeamView() {
 				)}
 				{state?.enabled && (
 					<>
+						{staffingMission && <form className="mb-5 max-w-2xl space-y-4 rounded-lg border p-5" onSubmit={async (event) => {
+							event.preventDefault();
+							const workers = new FormData(event.currentTarget).getAll("workers");
+							if (await execute("mission-staff", { mission: staffingMission.id, revision: staffingMission.revision, workers })) setStaffingMission(null);
+						}}>
+							<h2 className="font-medium">Staff mission {staffingMission.id}</h2>
+							<MissionStaffingFields key={staffingMission.id} agents={state.agents} chief={staffingMission.chief} workers={staffingMission.workers} fixedChief />
+							<Button disabled={busy}>Save staffing</Button>
+							<Button type="button" variant="ghost" onClick={() => setStaffingMission(null)}>Cancel</Button>
+						</form>}
 						<div className="mb-5 flex flex-wrap gap-2" role="tablist" aria-label="Project team">
 							{(["org", "planning", "missions", "workers", "agents", "mail"] as const).map((item) => (
 								<Button
@@ -656,6 +670,8 @@ export function TeamView() {
 												Chief {mission.chief} · Final signoff {mission.orchestrator} · Revision {mission.revision}
 											</p>
 											<p className="mt-3 whitespace-pre-wrap text-sm">{mission.objective}</p>
+											<p className="mt-3 text-sm">Assigned workers: {mission.workers?.join(", ") || "Unassigned — set staffing before assigning tasks"}</p>
+											{["active", "blocked"].includes(mission.status) && <Button variant="outline" className="mt-3" onClick={() => { setStaffingMission(mission); setActionError(""); }}>Edit staffing for {mission.id}</Button>}
 											<p className="mt-3 text-xs text-muted-foreground">Acceptance criteria</p>
 											<p className="whitespace-pre-wrap text-sm">{mission.criteria}</p>
 											{mission.plan && (

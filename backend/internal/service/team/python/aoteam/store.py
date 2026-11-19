@@ -44,6 +44,10 @@ CREATE TABLE IF NOT EXISTS tasks (
  id TEXT PRIMARY KEY, mission TEXT NOT NULL REFERENCES missions(id), worker TEXT NOT NULL REFERENCES agents(id),
  objective TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'assigned', revision INTEGER NOT NULL DEFAULT 1,
  result TEXT, evidence TEXT, review TEXT);
+CREATE TABLE IF NOT EXISTS mission_workers (
+ mission TEXT NOT NULL REFERENCES missions(id), worker TEXT NOT NULL REFERENCES agents(id), PRIMARY KEY(mission,worker));
+CREATE TABLE IF NOT EXISTS draft_workers (
+ draft TEXT NOT NULL REFERENCES drafts(id), worker TEXT NOT NULL REFERENCES agents(id), PRIMARY KEY(draft,worker));
 CREATE TABLE IF NOT EXISTS messages (
  seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, sender TEXT NOT NULL,
  recipient TEXT NOT NULL REFERENCES agents(id), subject TEXT NOT NULL, body TEXT NOT NULL,
@@ -65,14 +69,16 @@ class Store:
             db.executescript(SCHEMA)
             db.execute("BEGIN IMMEDIATE")
             version = db.execute("SELECT value FROM settings WHERE key='schema'").fetchone()
-            if version and version[0] not in {"1", "2"}:
+            if version and version[0] not in {"1", "2", "3"}:
                 raise ContractError("Unsupported state schema")
             # Additive upgrade of the Python-owned database preserves live teams.
             for table, column, declaration in (("agents", "revision", "INTEGER NOT NULL DEFAULT 1"),
                                                 ("missions", "plan", "TEXT NOT NULL DEFAULT ''")):
                 if column not in {row[1] for row in db.execute(f"PRAGMA table_info({table})")}:
                     db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
-            db.execute("INSERT OR REPLACE INTO settings VALUES ('schema','2')")
+            if version and version[0] in {"1", "2"}:
+                db.execute("INSERT OR IGNORE INTO mission_workers SELECT DISTINCT mission,worker FROM tasks")
+            db.execute("INSERT OR REPLACE INTO settings VALUES ('schema','3')")
             binding = config.project / ".llmwiki.json"
             if binding.exists():
                 identity = json.loads(binding.read_text(encoding="utf-8"))
@@ -113,7 +119,27 @@ class Store:
         row = db.execute(f"SELECT * FROM {table} WHERE id=?", (key,)).fetchone()
         if row is None:
             raise ContractError(f"Unknown {table} ID: {key}")
-        return dict(row)
+        result = dict(row)
+        if table in {"missions", "drafts"}:
+            owner = "mission" if table == "missions" else "draft"
+            result["workers"] = [r[0] for r in db.execute(f"SELECT worker FROM {owner}_workers WHERE {owner}=? ORDER BY worker", (key,))]
+        return result
+
+    def validate_workers(self, db, workers, chief, required=False):
+        if not isinstance(workers, list) or any(not isinstance(w, str) for w in workers) or len(set(workers)) != len(workers):
+            raise ContractError("Workers must be a list of distinct agent IDs")
+        if required and not workers:
+            raise ContractError("Assign at least one worker in the mission spec")
+        for worker in workers:
+            target = self.get(db, "agents", worker)
+            if target["tier"] != "worker" or not chief or target["parent"] != chief:
+                raise ContractError("Each mission worker must report to the selected chief")
+        return sorted(workers)
+
+    @staticmethod
+    def set_workers(db, kind, owner, workers):
+        db.execute(f"DELETE FROM {kind}_workers WHERE {kind}=?", (owner,))
+        db.executemany(f"INSERT INTO {kind}_workers VALUES (?,?)", [(owner, worker) for worker in workers])
 
     def require(self, db, actor, tiers):
         if actor == "operator":
@@ -229,6 +255,8 @@ class Store:
     def snapshot(self):
         with self.connect() as db:
             result = {table: [dict(row) for row in db.execute(f"SELECT * FROM {table}")] for table in ("roles", "agents", "missions", "tasks", "drafts")}
+            for table in ("missions", "drafts"):
+                result[table] = [self.get(db, table, item["id"]) for item in result[table]]
             result["messages"] = [dict(row) for row in db.execute("SELECT * FROM messages ORDER BY seq DESC LIMIT 100")]
             result["pending"] = {row[0]: row[1] for row in db.execute("SELECT recipient,COUNT(*) FROM messages WHERE acknowledged_at IS NULL GROUP BY recipient")}
             return result

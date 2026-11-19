@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import type { MissionDraft, TeamAction, TeamState } from "./TeamView";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
+import { MissionStaffingFields } from "./MissionStaffingFields";
 
 export function TeamPlanning({
 	projectId,
@@ -17,11 +18,11 @@ export function TeamPlanning({
 }) {
 	const [editing, setEditing] = useState<MissionDraft | "new" | null>(null);
 	const planner = state.agents.find((agent) => agent.tier === "planner");
-	const chiefs = state.agents.filter((agent) => agent.tier === "chief");
 	const drafts = state.drafts ?? [];
 	async function save(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault();
 		const values: Record<string, unknown> = Object.fromEntries(new FormData(event.currentTarget));
+		values.workers = new FormData(event.currentTarget).getAll("workers");
 		if (!values.chief) values.chief = null;
 		if (editing && editing !== "new") {
 			values.draft = editing.id;
@@ -99,21 +100,7 @@ export function TeamPlanning({
 							/>
 						</label>
 					))}
-					<label className="block text-sm">
-						Proposed chief
-						<select
-							name="chief"
-							defaultValue={editing === "new" ? "" : (editing.chief ?? "")}
-							className="mt-1 block w-full rounded-md border bg-background p-2"
-						>
-							<option value="">Choose before release</option>
-							{chiefs.map((chief) => (
-								<option key={chief.id} value={chief.id}>
-									{chief.id}
-								</option>
-							))}
-						</select>
-					</label>
+					<MissionStaffingFields agents={state.agents} chief={editing === "new" ? "" : editing.chief ?? ""} workers={editing === "new" ? [] : editing.workers} />
 					<p className="text-xs text-muted-foreground">
 						Saving sends the draft to your planner. Execution starts only after you release a complete draft.
 					</p>
@@ -143,6 +130,7 @@ export function TeamPlanning({
 					<p className="mt-1 text-xs text-muted-foreground">
 						Planner {draft.planner} / proposed chief {draft.chief ?? "unassigned"}
 					</p>
+					<p className="mt-1 text-sm">Assigned workers: {draft.workers?.join(", ") || "Unassigned"}</p>
 					<p className="mt-3 whitespace-pre-wrap text-sm">{draft.objective}</p>
 					<p className="mt-3 text-xs text-muted-foreground">Acceptance criteria</p>
 					<p className="whitespace-pre-wrap text-sm">{draft.criteria || "Still to be defined"}</p>
@@ -154,7 +142,7 @@ export function TeamPlanning({
 								Edit draft {draft.id}
 							</Button>
 							<Button
-								disabled={busy || !draft.chief || !draft.criteria.trim() || !draft.plan.trim()}
+								disabled={busy || !draft.chief || !draft.workers?.length || !draft.criteria.trim() || !draft.plan.trim()}
 								onClick={() => void onAction("draft-release", { draft: draft.id, revision: draft.revision })}
 							>
 								Release mission {draft.id}
