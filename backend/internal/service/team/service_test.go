@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/aoagents/agent-orchestrator/backend/internal/domain"
@@ -195,5 +196,118 @@ func TestTeamSupervisionModesThroughDaemonAPI(t *testing.T) {
 	signed = act("session-orch", "review", map[string]any{"kind": "mission", "record": "led", "revision": 2, "approve": true, "feedback": "Final signoff"})
 	if signed["status"] != "approved" {
 		t.Fatalf("legacy mission status=%v", signed["status"])
+	}
+}
+
+// dispatchNativeFixture records wake sends for controllable native sessions.
+type dispatchNativeFixture struct {
+	sessionFixture
+	mu       sync.Mutex
+	sessions map[domain.SessionID]domain.Session
+	sends    []domain.SessionID
+}
+
+func (f *dispatchNativeFixture) Get(_ context.Context, id domain.SessionID) (domain.Session, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	session, ok := f.sessions[id]
+	if !ok {
+		return domain.Session{}, fmt.Errorf("unknown session %s", id)
+	}
+	return session, nil
+}
+
+func (f *dispatchNativeFixture) Send(_ context.Context, id domain.SessionID, _ string, _ *ports.SpawnAttachment) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sends = append(f.sends, id)
+	return nil
+}
+
+func (f *dispatchNativeFixture) sendCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.sends)
+}
+
+func (f *dispatchNativeFixture) setSession(session domain.Session) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sessions[session.ID] = session
+}
+
+// TestTeamDispatchWakesIdleSessionsOnce drives the dispatcher wake path for a
+// Claude Chat worker with pending mail: exactly one wake while idle, fenced by
+// the notify throttle against redelivery, and no wake once the session turns
+// busy or terminates.
+func TestTeamDispatchWakesIdleSessionsOnce(t *testing.T) {
+	python, err := pythonCommand()
+	if err != nil {
+		t.Skip(err)
+	}
+	for _, probe := range []string{
+		"import sys; assert sys.version_info >= (3,11)",
+		"import os, sys; sys.path.insert(0, os.environ['AO_LLMWIKI_SOURCE']); import llmwiki",
+	} {
+		if err := exec.Command(python, "-c", probe).Run(); err != nil {
+			t.Skip("Python 3.11+ with llmwiki is required for team integration")
+		}
+	}
+	root := t.TempDir()
+	project := domain.ProjectID("project")
+	fixture := projectFixture{filepath.Join(root, "proj")}
+	if err := os.MkdirAll(fixture.path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	native := &dispatchNativeFixture{sessions: map[domain.SessionID]domain.Session{}}
+	service := New(filepath.Join(root, "data"), fixture, native, slog.Default())
+	ctx := context.Background()
+	act := func(session, operation string, arguments map[string]any) {
+		t.Helper()
+		encoded, err := json.Marshal(arguments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := service.Execute(ctx, project, Request{Operation: operation, SessionID: session, Arguments: encoded}); err != nil {
+			t.Fatalf("%s %s: %v", operation, session, err)
+		}
+	}
+	act("", "enable", map[string]any{"memory_root": filepath.Join(root, "memory")})
+	act("", "agent-add", map[string]any{"agent": "orch", "role": "orchestrator"})
+	act("", "agent-add", map[string]any{"agent": "chief", "role": "chief", "parent": "orch"})
+	act("", "agent-add", map[string]any{"agent": "worker", "role": "worker", "parent": "chief", "provider": "claude-code", "mode": "chat"})
+	for _, agent := range []string{"orch", "chief", "worker"} {
+		if _, err := service.call(ctx, project, "", "attach", map[string]any{"agent": agent, "session_id": "session-" + agent}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Every agent holds its unacknowledged "Team agent ready" mail, so the
+	// worker's wake is due. Only the worker has a native session; the rest
+	// are skipped without sends.
+	native.setSession(domain.Session{ID: "session-worker", Activity: domain.Activity{State: domain.ActivityIdle}, ProvisionState: domain.SessionProvisionReady})
+	if err := service.dispatchProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	if got := native.sendCount(); got != 1 {
+		t.Fatalf("wake sends = %d, want exactly 1", got)
+	}
+	// Immediate redispatch must not deliver again: the wake receipt fences it.
+	if err := service.dispatchProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	if got := native.sendCount(); got != 1 {
+		t.Fatalf("wake sends after redispatch = %d, want still 1", got)
+	}
+	// A session that turned busy or terminated is never woken.
+	native.setSession(domain.Session{ID: "session-worker", Activity: domain.Activity{State: domain.ActivityActive}, ProvisionState: domain.SessionProvisionReady})
+	if err := service.dispatchProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	native.setSession(domain.Session{ID: "session-worker", IsTerminated: true, Activity: domain.Activity{State: domain.ActivityIdle}, ProvisionState: domain.SessionProvisionReady})
+	if err := service.dispatchProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	if got := native.sendCount(); got != 1 {
+		t.Fatalf("wake sends after busy/terminated = %d, want still 1", got)
 	}
 }
