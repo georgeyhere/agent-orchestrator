@@ -9,9 +9,10 @@ Chiefs use AO's native worker runtime. Their team tier defines their authority i
 the workflow. Each project team has one orchestrator, optionally one planner, and
 any number of chiefs and workers. Custom roles have a fixed tier and their own
 standing instructions.
-Team providers are Codex (Terminal UI and Chat) and Muse Code (Terminal UI).
-Both receive the team mailbox hooks and llmwiki/datashard instructions. On Windows,
-Muse is discovered on PATH or at `%LOCALAPPDATA%\Programs\muse\muse.cmd`.
+Team providers are Codex (Terminal UI and Chat), Muse Code (Terminal UI), and
+Claude Code (Terminal UI and Chat). All receive the team mailbox hooks and
+llmwiki/datashard instructions. On Windows, Muse is discovered on PATH or at
+`%LOCALAPPDATA%\Programs\muse\muse.cmd`.
 
 ## Run the desktop app
 
@@ -95,7 +96,7 @@ For example, to configure this Windows user's existing datashard:
 3. Enable its team. This validates llmwiki and creates a stable `.llmwiki.json`
    binding if the project needs one. Existing namespaces are preserved.
 4. Spawn an orchestrator, then chiefs under it and workers under their chiefs.
-   Choose a role and provider: Codex Terminal UI/Chat or Muse Terminal UI.
+   Choose a role and provider: Codex Terminal UI/Chat, Muse Terminal UI, or Claude Code Terminal UI/Chat.
 5. Use Create planner to add a project planner, normally in Chat mode. Open its
    conversation through Work with planner. Request mission planning with a draft
    ID and goal, then refine the brief, acceptance criteria, constraints, and plan
@@ -196,7 +197,7 @@ Each argument file is one JSON object. These are the operation arguments.
 | --- | --- |
 | `enable` | Optional `memory_root` |
 | `role-add` | `role`, `tier`, `instructions` |
-| `agent-add` | `agent`, `role`, optional `parent`, `provider` (`codex`), `mode` (`tui` or `chat`) |
+| `agent-add` | `agent`, `role`, optional `parent`, `provider` (`codex`, `muse`, or `claude-code`), `mode` (`tui` or `chat`; `muse` only supports `tui`) |
 | `agent-control` | `agent`, `action` (`pause`, `resume`, `cancel`) |
 | `mission-create` | `mission`, `chief`, `objective`, `criteria` |
 | `draft-create` | `draft`, `objective`, optional `criteria`, `plan`, `chief` |

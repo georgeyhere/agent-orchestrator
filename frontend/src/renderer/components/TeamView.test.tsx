@@ -211,6 +211,41 @@ describe("project teams", () => {
 			}),
 		);
 	});
+	it("spawns Claude Code workers through either interface", async () => {
+		mount();
+		fireEvent.click(await screen.findByRole("button", { name: "Spawn agent" }));
+		fireEvent.change(screen.getByLabelText("Agent provider"), {
+			target: { value: "claude-code" },
+		});
+		expect(screen.getByLabelText("Agent interface")).toHaveValue("tui");
+		expect(
+			within(screen.getByLabelText("Agent interface")).getByRole("option", {
+				name: "chat",
+			}),
+		).toBeInTheDocument();
+		fireEvent.change(screen.getByLabelText("Agent ID"), {
+			target: { value: "claude-worker" },
+		});
+		fireEvent.change(screen.getByLabelText("Agent interface"), {
+			target: { value: "chat" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
+				params: { path: { projectId: "project" } },
+				body: {
+					operation: "agent-add",
+					arguments: {
+						agent: "claude-worker",
+						role: "worker",
+						parent: "chief-one",
+						provider: "claude-code",
+						mode: "chat",
+					},
+				},
+			}),
+		);
+	});
 	it("registers a project from a typed folder and opens team setup", async () => {
 		mocks.get.mockImplementation(async (path: string) =>
 			path === "/api/v1/projects"

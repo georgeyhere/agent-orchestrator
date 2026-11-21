@@ -208,7 +208,7 @@ export function TeamView() {
 	const fields: Record<Editor, Field[]> = {
 		"agent-add": [
 			{ name: "agent", label: "Agent ID" },
-			{ name: "provider", label: "Agent provider", options: ["codex", "muse"] },
+			{ name: "provider", label: "Agent provider", options: ["codex", "muse", "claude-code"] },
 			{
 				name: "role",
 				label: "Role",
@@ -577,7 +577,7 @@ export function TeamView() {
 													</span>
 												</div>
 												<p className="mt-2 text-sm text-muted-foreground">
-													{agent.tier} · {agent.role} · {agent.provider === "muse" ? "Muse" : "Codex"}
+													{agent.tier} · {agent.role} · {agent.provider === "muse" ? "Muse" : agent.provider === "claude-code" ? "Claude Code" : "Codex"}
 												</p>
 												<p className="mt-1 text-sm">Supervisor {agent.parent ?? "project"}</p>
 												{state.tasks

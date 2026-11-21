@@ -84,6 +84,18 @@ class TeamTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "terminal interface"):
             self.action("agent-add", {"agent": "invalid-muse", "role": "worker", "parent": "chief", "provider": "muse", "mode": "chat"})
 
+    def test_claude_code_workers_use_the_same_contract_in_terminal_and_chat(self):
+        for mode in ("tui", "chat"):
+            agent = "claude-worker-" + mode
+            self.action("agent-add", {"agent": agent, "role": "worker", "parent": "chief", "provider": "claude-code", "mode": mode})
+            Team(self.request | {"operation": "attach", "arguments": {"agent": agent, "session_id": "session-" + agent}}).execute()
+            self.assertEqual(self.action("hook", {"event": "Stop"}, agent)["decision"], "block")
+            self.clear_mail(agent)
+            self.assertEqual(self.action("hook", {"event": "Stop"}, agent), {})
+            self.assertEqual(self.action("memory-policy", actor=agent)["project_id"], Team(self.request).wiki().project_id)
+        with self.assertRaisesRegex(ContractError, "must be codex"):
+            self.action("agent-add", {"agent": "invalid-provider", "role": "worker", "parent": "chief", "provider": "cursor", "mode": "tui"})
+
     def second_chief(self):
         self.action("agent-add", {"agent": "chief-two", "role": "chief", "parent": "orch"}, "orch")
         Team(self.request | {"operation": "attach", "arguments": {"agent": "chief-two", "session_id": "session-chief-two"}}).execute()

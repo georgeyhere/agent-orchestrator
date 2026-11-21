@@ -193,7 +193,7 @@ class Store:
         identifier(agent)
         if agent == "operator":
             raise ContractError("operator is reserved for the human control surface")
-        if provider not in {"codex", "muse"}:
+        if provider not in {"codex", "muse", "claude-code"}:
             raise ContractError("Unknown agent provider")
         caller = self.require(db, actor, {"orchestrator", "chief"})
         definition = self.get(db, "roles", role)

@@ -47,6 +47,7 @@ func TestTeamActPostsSupervisorOperations(t *testing.T) {
 		arguments string
 	}{
 		{"direct worker under orchestrator", "agent-add", `{"agent":"direct","role":"worker","parent":"orch"}`},
+		{"claude-code worker in chat mode", "agent-add", `{"agent":"claude-worker","role":"worker","parent":"chief","provider":"claude-code","mode":"chat"}`},
 		{"direct mission with supervisor", "mission-create", `{"mission":"direct","supervisor":"orch","objective":"Work","criteria":"Verify","workers":["direct"]}`},
 		{"legacy chief-led mission", "mission-create", `{"mission":"led","chief":"chief","objective":"Work","criteria":"Verify","workers":["w"]}`},
 		{"direct task assign", "task-assign", `{"task":"t","mission":"direct","worker":"direct","objective":"Work"}`},

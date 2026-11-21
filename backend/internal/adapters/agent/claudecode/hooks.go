@@ -13,6 +13,15 @@ const (
 	claudeSettingsFileName  = "settings.local.json"
 	claudeHookCommandPrefix = "ao hooks claude-code "
 	claudeHookTimeout       = 30
+	// claudeTeamHookCommandPrefix identifies the team mailbox hooks. Like the
+	// activity hooks above, the command resolves `ao` from PATH: Claude passes
+	// its process environment to hook children (the existing activity
+	// callbacks already depend on AO_SESSION_ID reaching them), so no
+	// session-specific routing is embedded. Keeping the command
+	// machine-independent also keeps uninstall/detection exact: no stale
+	// absolute executable path can survive a daemon upgrade.
+	claudeTeamHookCommandPrefix = "ao team hook "
+	claudeTeamHookTimeout       = 30
 )
 
 // claudeSessionStartMatcher is referenced by pointer so SessionStart serializes
@@ -69,21 +78,64 @@ var claudeHooks = hooksjson.Manager{
 	Managed:               claudeManagedHooks,
 }
 
+// claudeTeamManagedHooks is the team mailbox set installed only for managed
+// team sessions: SessionStart/UserPromptSubmit refresh role and memory
+// instructions, PostToolUse and Stop surface pending mail, and Stop blocks the
+// turn while mail or tracked datashard edits remain. The events mirror the
+// daemon team-hook endpoint allowlist. SessionStart shares the activity
+// matcher so a --resume relaunch refreshes instructions under the new launch
+// generation just as it re-confirms the native session id.
+var claudeTeamManagedHooks = []hooksjson.HookSpec{
+	{Event: "SessionStart", Matcher: &claudeSessionStartMatcher, Command: claudeTeamHookCommandPrefix + "SessionStart"},
+	{Event: "UserPromptSubmit", Command: claudeTeamHookCommandPrefix + "UserPromptSubmit"},
+	{Event: "PostToolUse", Command: claudeTeamHookCommandPrefix + "PostToolUse"},
+	{Event: "Stop", Command: claudeTeamHookCommandPrefix + "Stop"},
+}
+
+// claudeTeamHooks manages the mailbox hooks in the same settings file. It is a
+// separate Manager because uninstall and detection match on CommandPrefix, and
+// the team commands carry a different prefix than the activity hooks; folding
+// them into claudeManagedHooks would leave team entries behind on uninstall
+// and invisible to detection.
+var claudeTeamHooks = hooksjson.Manager{
+	Label:         "claude-code team",
+	CommandPrefix: claudeTeamHookCommandPrefix,
+	Timeout:       claudeTeamHookTimeout,
+	Path:          claudeSettingsPath,
+	Managed:       claudeTeamManagedHooks,
+}
+
 func claudeSettingsPath(workspacePath string) string {
 	return filepath.Join(workspacePath, claudeSettingsDirName, claudeSettingsFileName)
 }
 
 // GetAgentHooks installs AO's Claude Code hooks, preserving user-defined hooks and unrelated settings.
+// Managed team sessions (AO_TEAM_MANAGED=1) additionally receive the team
+// mailbox hooks. Install runs on both spawn and restore, so restored sessions
+// re-reconcile both sets without duplicating them.
 func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfig) error {
-	return claudeHooks.Install(ctx, cfg.WorkspacePath)
+	if err := claudeHooks.Install(ctx, cfg.WorkspacePath); err != nil {
+		return err
+	}
+	if cfg.Env["AO_TEAM_MANAGED"] != "1" {
+		return nil
+	}
+	return claudeTeamHooks.Install(ctx, cfg.WorkspacePath)
 }
 
 // UninstallHooks removes AO's Claude Code hooks, leaving user-defined hooks untouched.
 func (p *Plugin) UninstallHooks(ctx context.Context, workspacePath string) error {
-	return claudeHooks.Uninstall(ctx, workspacePath)
+	if err := claudeHooks.Uninstall(ctx, workspacePath); err != nil {
+		return err
+	}
+	return claudeTeamHooks.Uninstall(ctx, workspacePath)
 }
 
 // AreHooksInstalled reports whether any AO Claude Code hook is present.
 func (p *Plugin) AreHooksInstalled(ctx context.Context, workspacePath string) (bool, error) {
-	return claudeHooks.AreInstalled(ctx, workspacePath)
+	installed, err := claudeHooks.AreInstalled(ctx, workspacePath)
+	if err != nil || installed {
+		return installed, err
+	}
+	return claudeTeamHooks.AreInstalled(ctx, workspacePath)
 }
