@@ -127,6 +127,7 @@ export type SessionsBoardGridViewProps<
 	labels: BoardColumnLabels;
 	renderSessionCard: (session: TSession) => ReactNode;
 	sessions: TSession[];
+	parentSessionId?: (session: TSession) => string | undefined;
 };
 
 export function SessionsBoardGridView<TSession extends BoardSessionPresentation>({
@@ -134,9 +135,31 @@ export function SessionsBoardGridView<TSession extends BoardSessionPresentation>
 	labels,
 	renderSessionCard,
 	sessions,
+	parentSessionId,
 }: SessionsBoardGridViewProps<TSession>) {
+	const parents = new Map<string, string>();
+	const available = new Set(sessions.map((session) => session.id));
+	for (const session of sessions) {
+		const parent = parentSessionId?.(session);
+		if (parent && parent !== session.id && available.has(parent)) parents.set(session.id, parent);
+	}
+	// Broken or cyclic reference data must never make a card disappear.
+	for (const session of sessions) {
+		const seen = new Set([session.id]);
+		let parent = parents.get(session.id);
+		while (parent) {
+			if (seen.has(parent)) { parents.delete(session.id); break; }
+			seen.add(parent); parent = parents.get(parent);
+		}
+	}
+	const children = new Map<string, TSession[]>();
+	for (const session of sessions) {
+		const parent = parents.get(session.id);
+		if (parent) children.set(parent, [...(children.get(parent) ?? []), session]);
+	}
 	const byColumn = new Map<KanbanColumn, TSession[]>();
 	for (const session of sessions) {
+		if (parents.has(session.id)) continue;
 		const column = toKanbanColumn(session.kanbanColumn, session.status);
 		const sessionsForColumn = byColumn.get(column);
 		if (sessionsForColumn) sessionsForColumn.push(session);
@@ -156,6 +179,7 @@ export function SessionsBoardGridView<TSession extends BoardSessionPresentation>
 				{columns.map((column) => (
 					<BoardColumnView
 						column={column}
+						childrenBySession={children}
 						key={column.column}
 						labels={labels}
 						renderSessionCard={renderSessionCard}
@@ -168,11 +192,13 @@ export function SessionsBoardGridView<TSession extends BoardSessionPresentation>
 }
 
 function BoardColumnView<TSession extends BoardSessionPresentation>({
+	childrenBySession,
 	column,
 	labels,
 	renderSessionCard,
 	sessions,
 }: {
+	childrenBySession: Map<string, TSession[]>;
 	column: KanbanColumnView;
 	labels: BoardColumnLabels;
 	renderSessionCard: (session: TSession) => ReactNode;
@@ -183,6 +209,13 @@ function BoardColumnView<TSession extends BoardSessionPresentation>({
 			Number(boardSessionNeedsAttention(right)) - Number(boardSessionNeedsAttention(left));
 		return attentionPriority || right.updatedAt.localeCompare(left.updatedAt);
 	});
+	const count = (session: TSession): number => 1 + (childrenBySession.get(session.id) ?? []).reduce((total, child) => total + count(child), 0);
+	const renderNode = (session: TSession): ReactNode => <div key={session.id} data-board-agent={session.id}>
+		{renderSessionCard(session)}
+		{childrenBySession.has(session.id) && <div role="group" aria-label={`Agents reporting to ${session.title}`} className="ml-3 mt-2.5 space-y-2.5 border-l-2 border-border-strong pl-3">
+			{childrenBySession.get(session.id)!.map(renderNode)}
+		</div>}
+	</div>;
 	return (
 		<section
 			aria-label={labels.columnAria(column.label)}
@@ -199,13 +232,11 @@ function BoardColumnView<TSession extends BoardSessionPresentation>({
 				<span className={cn("text-xs font-medium", column.titleClassName)}>
 					{column.label}
 				</span>
-				<span className="ml-auto tabular-nums text-xs leading-none text-passive">{ordered.length}</span>
+				<span className="ml-auto tabular-nums text-xs leading-none text-passive">{ordered.reduce((total, session) => total + count(session), 0)}</span>
 			</div>
 			<div className="board-scrollbar min-h-0 flex-1 overflow-y-auto pl-3 pr-2 pb-3 pt-3">
 				<div className="flex min-h-full flex-col gap-2.5">
-					{ordered.map((session) => (
-						<Fragment key={session.id}>{renderSessionCard(session)}</Fragment>
-					))}
+					{ordered.map(renderNode)}
 				</div>
 			</div>
 		</section>

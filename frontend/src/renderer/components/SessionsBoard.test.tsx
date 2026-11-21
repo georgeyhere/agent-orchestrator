@@ -210,6 +210,21 @@ beforeEach(() => {
 });
 
 describe("SessionsBoard", () => {
+	it("groups registered workers under their chief and shows each mission assignment", () => {
+		const chief = boardSession({ id: "chief-session", title: "chief-0 (chief)", status: "working" });
+		const workers = ["muse-0", "muse-1"].map((id) => boardSession({ id, title: `${id} (worker)`, status: "idle" }));
+		workspaceQueryMock.mockReturnValue({ data: [{ id: chief.workspaceId, name: "Project", path: "/repo", sessions: [chief, ...workers] }], isSuccess: true });
+		const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+		client.setQueryData(["project-team", chief.workspaceId], {
+			enabled: true,
+			agents: [ { id: "chief-0", session_id: chief.id, parent: null }, ...workers.map((worker) => ({ id: worker.id, session_id: worker.id, parent: "chief-0" })) ],
+			missions: [{ id: "ship-feature", chief: "chief-0", workers: workers.map((worker) => worker.id), status: "active", objective: "Ship the feature" }],
+		});
+		renderBoardWithClient(client, chief.workspaceId);
+		const group = screen.getByRole("group", { name: "Agents reporting to chief-0 (chief)" });
+		for (const worker of workers) expect(within(group).getByText(worker.title)).toBeInTheDocument();
+		expect(screen.getAllByText(/Mission: ship-feature/)).toHaveLength(3);
+	});
 	it("leaves a Cloud standalone agent's project for Home: it has no board", async () => {
 		workspaceQueryMock.mockReturnValue({
 			data: [{ id: "agent-1", name: "Fix the flake", kind: "cloud", standaloneAgent: true, path: "", sessions: [] }],

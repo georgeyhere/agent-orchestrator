@@ -117,6 +117,17 @@ native conversation. Open session uses AO's existing conversation or terminal UI
 
 ## Configure the project organization
 
+The project Board also reflects the saved organization: worker session cards are
+nested beneath their chief's card. The group stays in the chief's board column;
+each worker keeps its own status badge, and the column count includes nested
+workers. If the supervisor has no visible board card, its workers remain visible
+on their own. Each registered agent card lists its current mission IDs from
+explicit mission staffing (including blocked or submitted missions awaiting
+review); approved missions are excluded. A staffed chief sees its missions and
+each worker sees only the missions naming that worker. Team assignments refresh
+with the project state. Ordinary, remote and cloud boards keep their existing
+presentation when local team metadata is unavailable.
+
 Mission specs explicitly record `chief` and `workers` (a list of agent IDs).
 In Planning, choose the responsible chief and check the named workers under
 Mission staffing. A draft can stay incomplete while you discuss the goal, but

@@ -55,6 +55,12 @@ describe("sharing from a board card", () => {
 		return { ...view, onOpen, onShare };
 	}
 
+	it("shows assigned mission IDs, objectives and status on the agent card", () => {
+		renderCard({ missionAssignments: [{ id: "mission-a", objective: "Deliver reports", status: "active" }] });
+		expect(screen.getByLabelText("Assigned missions")).toHaveTextContent("Mission: mission-a");
+		expect(screen.getByTitle("Deliver reports")).toHaveTextContent("(active)");
+	});
+
 	it("opens the share dialog from a Share button, without opening the session", () => {
 		const { onOpen, onShare } = renderCard();
 		const share = screen.getByRole("button", { name: "Share “Login flow”" });
