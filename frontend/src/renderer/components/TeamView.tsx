@@ -9,6 +9,7 @@ import { TeamPlanning } from "./TeamPlanning";
 import { TeamOrgChart } from "./TeamOrgChart";
 import { aoBridge } from "../lib/bridge";
 import { MissionStaffingFields } from "./MissionStaffingFields";
+import { MissionSubmitForm, ReviewForm } from "./TeamReview";
 
 type Role = { id: string; tier: string; instructions: string };
 export type Agent = {
@@ -81,7 +82,7 @@ export type MissionDraft = {
 	revision: number;
 	mission: string | null;
 };
-export type TeamAction = (operation: string, arguments_: Record<string, unknown>) => Promise<boolean>;
+export type TeamAction = (operation: string, arguments_: Record<string, unknown>, sessionId?: string) => Promise<boolean>;
 type Editor = "agent-add" | "role-add" | "mission-create" | "task-assign" | "send" | "enable";
 type Field = {
 	name: string;
@@ -92,10 +93,10 @@ type Field = {
 	value?: string;
 };
 
-async function teamAction(projectId: string, operation: string, arguments_: Record<string, unknown> = {}) {
+async function teamAction(projectId: string, operation: string, arguments_: Record<string, unknown> = {}, sessionId?: string) {
 	const { data, error } = await apiClient.POST("/api/v1/projects/{projectId}/team", {
 		params: { path: { projectId } },
-		body: { operation, arguments: arguments_ },
+		body: { operation, arguments: arguments_, ...(sessionId ? { sessionId } : {}) },
 	});
 	if (error) throw new Error(apiErrorMessage(error));
 	return data?.result;
@@ -185,11 +186,11 @@ export function TeamView() {
 			setBusy(false);
 		}
 	}
-	async function execute(operation: string, arguments_: Record<string, unknown>) {
+	async function execute(operation: string, arguments_: Record<string, unknown>, sessionId?: string) {
 		setBusy(true);
 		setActionError("");
 		try {
-			await teamAction(projectId, operation, arguments_);
+			await teamAction(projectId, operation, arguments_, sessionId);
 			await queryClient.invalidateQueries({
 				queryKey: ["project-team", projectId],
 			});
@@ -667,7 +668,12 @@ export function TeamView() {
 									<p className="text-sm text-muted-foreground">Define a mission and acceptance criteria for a supervisor.</p>
 								)}
 								<div className="space-y-4">
-									{state.missions.map((mission) => (
+									{state.missions.map((mission) => {
+										const missionTasks = state.tasks.filter((task) => task.mission === mission.id);
+										const supervisorSession = state.agents.find((agent) => agent.id === mission.supervisor)?.session_id ?? null;
+										const orchestratorSession = state.agents.find((agent) => agent.id === mission.orchestrator)?.session_id ?? null;
+										const tasksAccepted = missionTasks.every((task) => task.status === "accepted");
+										return (
 										<article key={mission.id} className="rounded-lg border p-5">
 											<div className="flex justify-between gap-4">
 												<h2 className="font-medium">{mission.id}</h2>
@@ -690,9 +696,36 @@ export function TeamView() {
 												</details>
 											)}
 											<Evidence item={mission} />
+											{mission.status === "active" && tasksAccepted &&
+												(supervisorSession ? (
+													<MissionSubmitForm
+														missionId={mission.id}
+														reviewer={mission.supervisor}
+														busy={busy}
+														onSubmit={(result, evidence) =>
+															void execute("submit", { kind: "mission", record: mission.id, revision: mission.revision, result, evidence }, supervisorSession)
+														}
+													/>
+												) : (
+													<p className="mt-3 text-xs text-muted-foreground">Reviewer {mission.supervisor} has no attached session.</p>
+												))}
+											{mission.status === "review" &&
+												(orchestratorSession ? (
+													<ReviewForm
+														kind="mission"
+														recordId={mission.id}
+														reviewer={mission.orchestrator}
+														acceptLabel="Approve"
+														busy={busy}
+														onReview={(approve, feedback) =>
+															void execute("review", { kind: "mission", record: mission.id, revision: mission.revision, approve, feedback }, orchestratorSession)
+														}
+													/>
+												) : (
+													<p className="mt-3 text-xs text-muted-foreground">Reviewer {mission.orchestrator} has no attached session.</p>
+												))}
 											<div className="mt-4 space-y-3">
-												{state.tasks
-													.filter((task) => task.mission === mission.id)
+												{missionTasks
 													.map((task) => (
 														<div key={task.id} className="rounded-md bg-muted/40 p-3">
 															<div className="flex justify-between gap-3">
@@ -705,11 +738,27 @@ export function TeamView() {
 															</div>
 															<p className="mt-2 whitespace-pre-wrap text-sm">{task.objective}</p>
 															<Evidence item={task} />
+															{task.status === "review" &&
+																(supervisorSession ? (
+																	<ReviewForm
+																		kind="task"
+																		recordId={task.id}
+																		reviewer={mission.supervisor}
+																		acceptLabel="Accept"
+																		busy={busy}
+																		onReview={(approve, feedback) =>
+																			void execute("review", { kind: "task", record: task.id, revision: task.revision, approve, feedback }, supervisorSession)
+																		}
+																	/>
+																) : (
+																	<p className="mt-3 text-xs text-muted-foreground">Reviewer {mission.supervisor} has no attached session.</p>
+																))}
 														</div>
 													))}
 											</div>
 										</article>
-									))}
+										);
+									})}
 								</div>
 							</>
 						)}
