@@ -56,8 +56,15 @@ func museHookGroup(cfg ports.WorkspaceHookConfig, event string) hooksjson.Matche
 // callback route directly in AO's per-session hook command so the callback can
 // identify its AO session and, in dev mode, the exact daemon that launched it.
 func museHookCommand(cfg ports.WorkspaceHookConfig, event string) string {
+	return museHookCommandLaunch(cfg, event, "")
+}
+
+// museHookCommandLaunch additionally pins the provider generation when the
+// caller knows it, so team mailbox callbacks survive the stale-launch fence.
+// Activity hooks keep the unpinned shape.
+func museHookCommandLaunch(cfg ports.WorkspaceHookConfig, event, launchID string) string {
 	if runtime.GOOS == "windows" {
-		return museWindowsCommand(cfg, "ao", "hooks muse "+event)
+		return museWindowsCommandLaunch(cfg, "ao", "hooks muse "+event, launchID)
 	}
 	assignments := []string{
 		"AO_SESSION_ID=" + museShellQuote(strings.TrimSpace(cfg.SessionID)),
@@ -66,16 +73,26 @@ func museHookCommand(cfg ports.WorkspaceHookConfig, event string) string {
 	if runFile := strings.TrimSpace(os.Getenv(aoRunFileEnvVar)); runFile != "" {
 		assignments = append(assignments, aoRunFileEnvVar+"="+museShellQuote(runFile))
 	}
+	if launchID != "" {
+		assignments = append(assignments, "AO_RUNTIME_LAUNCH_ID="+museShellQuote(launchID))
+	}
 	return "env " + strings.Join(assignments, " ") + " " + museHookCommandPrefix + event
 }
 
 // Use an explicit PowerShell process on Windows, independent of Muse's hook
 // shell. Encoding preserves paths containing spaces, quotes or shell syntax.
 func museWindowsCommand(cfg ports.WorkspaceHookConfig, executable, arguments string) string {
+	return museWindowsCommandLaunch(cfg, executable, arguments, "")
+}
+
+func museWindowsCommandLaunch(cfg ports.WorkspaceHookConfig, executable, arguments, launchID string) string {
 	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }
 	script := "$env:AO_SESSION_ID=" + quote(cfg.SessionID) + ";$env:AO_DATA_DIR=" + quote(cfg.DataDir) + ";"
 	if runFile := strings.TrimSpace(os.Getenv(aoRunFileEnvVar)); runFile != "" {
 		script += "$env:AO_RUN_FILE=" + quote(runFile) + ";"
+	}
+	if launchID != "" {
+		script += "$env:AO_RUNTIME_LAUNCH_ID=" + quote(launchID) + ";"
 	}
 	script += "& " + quote(executable) + " " + arguments + ";exit $LASTEXITCODE"
 	units := utf16.Encode([]rune(script))
@@ -87,10 +104,17 @@ func museWindowsCommand(cfg ports.WorkspaceHookConfig, executable, arguments str
 }
 
 func museTeamHookCommand(cfg ports.WorkspaceHookConfig, executable, event string) string {
+	return museTeamHookCommandLaunch(cfg, executable, event, "")
+}
+
+// museTeamHookCommandLaunch pins the provider generation when known. Muse
+// strips AO_* from hook subprocesses, so without the pinned id its mailbox
+// callbacks cannot pass the stale-launch fence.
+func museTeamHookCommandLaunch(cfg ports.WorkspaceHookConfig, executable, event, launchID string) string {
 	if runtime.GOOS == "windows" {
-		return museWindowsCommand(cfg, executable, "team hook "+event)
+		return museWindowsCommandLaunch(cfg, executable, "team hook "+event, launchID)
 	}
-	command := museHookCommand(cfg, event)
+	command := museHookCommandLaunch(cfg, event, launchID)
 	return strings.TrimSuffix(command, museHookCommandPrefix+event) + museShellQuote(executable) + " team hook " + event
 }
 
@@ -102,34 +126,54 @@ func museShellQuote(value string) string {
 // directory. Muse receives its path through a process-local environment
 // variable, so this does not create or modify any file in the project.
 func (p *Plugin) GetAgentHooks(ctx context.Context, cfg ports.WorkspaceHookConfig) error {
+	return p.writeHooksFile(ctx, cfg, "", "muse.GetAgentHooks")
+}
+
+// PrepareRuntimeLaunch reissues the managed-hook file once the runtime
+// generation is assigned, pinning it into the team mailbox commands. Like
+// MiniMax, Muse strips AO_* from hook children, so only the pinned commands
+// carry the identity the stale-launch fence requires. Unmanaged sessions and
+// launches without an assigned id keep the GetAgentHooks output.
+func (p *Plugin) PrepareRuntimeLaunch(ctx context.Context, cfg ports.WorkspaceHookConfig) error {
+	if cfg.Env["AO_TEAM_MANAGED"] != "1" {
+		return nil
+	}
+	launchID := strings.TrimSpace(cfg.Env["AO_RUNTIME_LAUNCH_ID"])
+	if launchID == "" {
+		return nil
+	}
+	return p.writeHooksFile(ctx, cfg, launchID, "muse.PrepareRuntimeLaunch")
+}
+
+func (p *Plugin) writeHooksFile(ctx context.Context, cfg ports.WorkspaceHookConfig, launchID, caller string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	path, err := museManagedHooksPath(cfg.DataDir, cfg.SessionID)
 	if err != nil {
-		return fmt.Errorf("muse.GetAgentHooks: %w", err)
+		return fmt.Errorf("%s: %w", caller, err)
 	}
 	hooks := museManagedHooks(cfg)
 	if cfg.Env["AO_TEAM_MANAGED"] == "1" {
 		executable, err := agentlaunch.Executable()
 		if err != nil {
-			return fmt.Errorf("muse.GetAgentHooks: resolve AO executable: %w", err)
+			return fmt.Errorf("%s: resolve AO executable: %w", caller, err)
 		}
 		for _, event := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"} {
 			hooks[event] = append(hooks[event], hooksjson.MatcherGroup{Hooks: []hooksjson.HookEntry{{
-				Type: "command", Command: museTeamHookCommand(cfg, executable, event), Timeout: 30,
+				Type: "command", Command: museTeamHookCommandLaunch(cfg, executable, event, launchID), Timeout: 30,
 			}}})
 		}
 	}
 	data, err := json.MarshalIndent(museHooksFile{Hooks: hooks}, "", "  ")
 	if err != nil {
-		return fmt.Errorf("muse.GetAgentHooks: marshal hooks: %w", err)
+		return fmt.Errorf("%s: marshal hooks: %w", caller, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return fmt.Errorf("muse.GetAgentHooks: create hooks directory: %w", err)
+		return fmt.Errorf("%s: create hooks directory: %w", caller, err)
 	}
 	if err := hookutil.AtomicWriteFile(path, append(data, '\n'), 0o600); err != nil {
-		return fmt.Errorf("muse.GetAgentHooks: write hooks: %w", err)
+		return fmt.Errorf("%s: write hooks: %w", caller, err)
 	}
 	return nil
 }

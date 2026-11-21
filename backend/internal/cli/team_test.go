@@ -39,6 +39,61 @@ func teamServer(t *testing.T, result string) (*httptest.Server, *teamCapture) {
 	return srv, capture
 }
 
+func TestTeamHookSendsLaunchIdentity(t *testing.T) {
+	newHookServer := func(t *testing.T, capture *teamCapture) *httptest.Server {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method != http.MethodPost || r.URL.Path != "/api/v1/sessions/worker-1/team-hook" {
+				http.NotFound(w, r)
+				return
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			capture.body = string(body)
+			_, _ = io.WriteString(w, `{"result":{}}`)
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	t.Run("launch id from environment", func(t *testing.T) {
+		cfg := setConfigEnv(t)
+		t.Setenv("AO_SESSION_ID", "worker-1")
+		t.Setenv("AO_RUNTIME_LAUNCH_ID", "launch-9")
+		capture := &teamCapture{}
+		writeRunFileFor(t, cfg, newHookServer(t, capture))
+		out, _, err := executeCLI(t, Deps{In: strings.NewReader("")}, "team", "hook", "Stop")
+		if err != nil {
+			t.Fatalf("hook: %v", err)
+		}
+		var body map[string]string
+		if err := json.Unmarshal([]byte(capture.body), &body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["event"] != "Stop" || body["launchId"] != "launch-9" {
+			t.Fatalf("hook body = %q, want event+launchId", capture.body)
+		}
+		if strings.TrimSpace(out) != "{}" {
+			t.Fatalf("hook output = %q", out)
+		}
+	})
+	t.Run("missing launch id omitted", func(t *testing.T) {
+		cfg := setConfigEnv(t)
+		t.Setenv("AO_SESSION_ID", "worker-1")
+		t.Setenv("AO_RUNTIME_LAUNCH_ID", "")
+		capture := &teamCapture{}
+		writeRunFileFor(t, cfg, newHookServer(t, capture))
+		if _, _, err := executeCLI(t, Deps{In: strings.NewReader("")}, "team", "hook", "Stop"); err != nil {
+			t.Fatalf("hook: %v", err)
+		}
+		if strings.Contains(capture.body, "launchId") {
+			t.Fatalf("hook body carries empty launchId: %q", capture.body)
+		}
+	})
+}
+
 func TestTeamActPostsSupervisorOperations(t *testing.T) {
 	t.Setenv("AO_SESSION_ID", "")
 	tests := []struct {

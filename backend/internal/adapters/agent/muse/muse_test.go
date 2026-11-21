@@ -446,6 +446,99 @@ func TestTeamHooksIncludeMailboxBoundariesWithoutToolActivity(t *testing.T) {
 	}
 }
 
+func TestPrepareRuntimeLaunchPinsLaunchIdentity(t *testing.T) {
+	cfg := ports.WorkspaceHookConfig{DataDir: t.TempDir(), SessionID: "team-worker",
+		Env: map[string]string{"AO_TEAM_MANAGED": "1", "AO_RUNTIME_LAUNCH_ID": "launch-9"}}
+	p := &Plugin{}
+	if err := p.GetAgentHooks(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PrepareRuntimeLaunch(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	path, err := museManagedHooksPath(cfg.DataDir, cfg.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file museHooksFile
+	if err := json.Unmarshal(data, &file); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []string{"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"} {
+		groups := file.Hooks[event]
+		if len(groups) == 0 {
+			t.Fatalf("missing %s", event)
+		}
+		hook := groups[len(groups)-1].Hooks[0]
+		if decoded := decodedMuseHook(t, hook.Command); !strings.Contains(decoded, "team hook "+event) || !strings.Contains(decoded, "launch-9") {
+			t.Fatalf("team hook lacks pinned id: %q", decoded)
+		}
+	}
+}
+
+func TestPrepareRuntimeLaunchSkipsUnmanagedOrMissingIdentity(t *testing.T) {
+	p := &Plugin{}
+	unmanaged := ports.WorkspaceHookConfig{DataDir: t.TempDir(), SessionID: "plain",
+		Env: map[string]string{"AO_RUNTIME_LAUNCH_ID": "launch-9"}}
+	if err := p.GetAgentHooks(context.Background(), unmanaged); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PrepareRuntimeLaunch(context.Background(), unmanaged); err != nil {
+		t.Fatal(err)
+	}
+	path, err := museManagedHooksPath(unmanaged.DataDir, unmanaged.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(path); err != nil || strings.Contains(string(data), "team hook") {
+		t.Fatalf("unmanaged hooks gained team commands: %v", err)
+	}
+	managed := ports.WorkspaceHookConfig{DataDir: t.TempDir(), SessionID: "team-worker",
+		Env: map[string]string{"AO_TEAM_MANAGED": "1"}}
+	if err := p.GetAgentHooks(context.Background(), managed); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(mustMuseHooksPath(t, managed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.PrepareRuntimeLaunch(context.Background(), managed); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(mustMuseHooksPath(t, managed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("prepare without an assigned id rewrote team hooks")
+	}
+	var file museHooksFile
+	if err := json.Unmarshal(after, &file); err != nil {
+		t.Fatal(err)
+	}
+	groups := file.Hooks["Stop"]
+	if len(groups) == 0 {
+		t.Fatal("missing Stop")
+	}
+	decoded := decodedMuseHook(t, groups[len(groups)-1].Hooks[0].Command)
+	if !strings.Contains(decoded, "team hook Stop") || strings.Contains(decoded, "AO_RUNTIME_LAUNCH_ID") {
+		t.Fatalf("unpinned team hook changed shape: %q", decoded)
+	}
+}
+
+func mustMuseHooksPath(t *testing.T, cfg ports.WorkspaceHookConfig) string {
+	t.Helper()
+	path, err := museManagedHooksPath(cfg.DataDir, cfg.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestWindowsHookPreservesRoutingAndLiteralPaths(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows shell boundary")
@@ -466,6 +559,27 @@ func TestWindowsHookPreservesRoutingAndLiteralPaths(t *testing.T) {
 	}
 	if string(output) != cfg.SessionID+"|"+cfg.DataDir+"|"+runfile {
 		t.Fatalf("routing changed: %s", output)
+	}
+}
+
+func TestWindowsTeamHookDeliversPinnedLaunchIdentity(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows shell boundary")
+	}
+	root := t.TempDir()
+	script := filepath.Join(root, "capture.ps1")
+	if err := os.WriteFile(script, []byte("[Console]::Write($env:AO_RUNTIME_LAUNCH_ID); exit 0"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := ports.WorkspaceHookConfig{SessionID: "worker-1", DataDir: root}
+	command := museWindowsCommandLaunch(cfg, "powershell.exe", "-NoProfile -File '"+strings.ReplaceAll(script, "'", "''")+"'", "launch-9")
+	parts := strings.Fields(command)
+	output, err := exec.Command(parts[0], parts[1:]...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("hook failed: %v: %s", err, output)
+	}
+	if string(output) != "launch-9" {
+		t.Fatalf("pinned launch identity lost: %q", output)
 	}
 }
 

@@ -56,10 +56,18 @@ func newTeamCommand(c *commandContext) *cobra.Command {
 		if _, err := io.Copy(io.Discard, c.deps.In); err != nil {
 			return err
 		}
+		// The launch identity proves this callback belongs to the live
+		// provider generation: the supervised terminal launch id for TUI,
+		// the chat host boot id for Chat. Callbacks that predate it send ""
+		// and stay accepted for backward compatibility.
+		body := map[string]string{"event": args[0]}
+		if launchID := validLaunchID(os.Getenv("AO_RUNTIME_LAUNCH_ID")); launchID != "" {
+			body["launchId"] = launchID
+		}
 		var response struct {
 			Result json.RawMessage `json:"result"`
 		}
-		if err := c.postJSON(cmd.Context(), "sessions/"+url.PathEscape(session)+"/team-hook", map[string]string{"event": args[0]}, &response); err != nil {
+		if err := c.postJSON(cmd.Context(), "sessions/"+url.PathEscape(session)+"/team-hook", body, &response); err != nil {
 			return err
 		}
 		_, err := fmt.Fprintln(c.deps.Out, string(response.Result))

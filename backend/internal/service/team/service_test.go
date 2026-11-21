@@ -88,6 +88,34 @@ func (s sessionFixture) GetRecord(_ context.Context, id domain.SessionID) (domai
 	return domain.SessionRecord{ID: id, ProjectID: s.project, Metadata: domain.SessionMetadata{WorkspacePath: s.path}}, nil
 }
 
+// fenceSessionFixture serves one mutable session record so hook-fence tests
+// can rotate the committed launch generation between calls.
+type fenceSessionFixture struct {
+	sessionFixture
+	mu       sync.Mutex
+	mode     domain.SessionMode
+	launchID string
+}
+
+func (f *fenceSessionFixture) setMode(mode domain.SessionMode) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mode = mode
+}
+
+func (f *fenceSessionFixture) setLaunchID(launchID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.launchID = launchID
+}
+
+func (f *fenceSessionFixture) GetRecord(_ context.Context, id domain.SessionID) (domain.SessionRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return domain.SessionRecord{ID: id, ProjectID: f.project, Mode: f.mode,
+		Metadata: domain.SessionMetadata{WorkspacePath: f.path, RuntimeLaunchID: f.launchID}}, nil
+}
+
 func (s sessionFixture) Get(context.Context, domain.SessionID) (domain.Session, error) {
 	return domain.Session{}, fmt.Errorf("unused session lookup")
 }
@@ -310,4 +338,121 @@ func TestTeamDispatchWakesIdleSessionsOnce(t *testing.T) {
 	if got := native.sendCount(); got != 1 {
 		t.Fatalf("wake sends after busy/terminated = %d, want still 1", got)
 	}
+}
+
+// TestTeamHookFencesStaleLaunches drives the mailbox-hook fence: a callback
+// naming a replaced launch reads nothing and marks nothing, while the current
+// launch and pre-fencing callers still deliver. Delivery marks are proven
+// through acknowledge, which refuses mail the hook never delivered.
+func TestTeamHookFencesStaleLaunches(t *testing.T) {
+	python, err := pythonCommand()
+	if err != nil {
+		t.Skip(err)
+	}
+	for _, probe := range []string{
+		"import sys; assert sys.version_info >= (3,11)",
+		"import os, sys; sys.path.insert(0, os.environ['AO_LLMWIKI_SOURCE']); import llmwiki",
+	} {
+		if err := exec.Command(python, "-c", probe).Run(); err != nil {
+			t.Skip("Python 3.11+ with llmwiki is required for team integration")
+		}
+	}
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	project := domain.ProjectID("project")
+	fixture := projectFixture{filepath.Join(root, "proj")}
+	if err := os.MkdirAll(fixture.path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessions := &fenceSessionFixture{sessionFixture: sessionFixture{project: project, path: fixture.path}}
+	service := New(dataDir, fixture, sessions, slog.Default())
+	ctx := context.Background()
+	act := func(session, operation string, arguments map[string]any) map[string]any {
+		t.Helper()
+		encoded, err := json.Marshal(arguments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := service.Execute(ctx, project, Request{Operation: operation, SessionID: session, Arguments: encoded})
+		if err != nil {
+			t.Fatalf("%s %s: %v", operation, session, err)
+		}
+		var out map[string]any
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	act("", "enable", map[string]any{"memory_root": filepath.Join(root, "memory")})
+	act("", "agent-add", map[string]any{"agent": "orch", "role": "orchestrator"})
+	act("", "agent-add", map[string]any{"agent": "chief", "role": "chief", "parent": "orch"})
+	act("", "agent-add", map[string]any{"agent": "worker", "role": "worker", "parent": "chief", "provider": "claude-code", "mode": "tui"})
+	if _, err := service.call(ctx, project, "", "attach", map[string]any{"agent": "worker", "session_id": "session-worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.call(ctx, project, "", "attach", map[string]any{"agent": "chief", "session_id": "session-chief"}); err != nil {
+		t.Fatal(err)
+	}
+	writeBoot := func(boot string) {
+		t.Helper()
+		dir := filepath.Join(dataDir, "chat-hosts", "session-worker")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		content, err := json.Marshal(map[string]any{
+			"version": 1, "sessionId": "session-worker",
+			"address": "127.0.0.1:1", "token": "test", "pid": 1,
+			"startedAt": "2026-01-01T00:00:00Z", "bootId": boot,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "host.json"), content, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// hookCase sends one fresh mail, invokes the hook as described, and checks
+	// both what the callback read and whether it marked the mail delivered.
+	hookCase := func(name, mode domain.SessionMode, recorded, provided string, wantDelivered bool) {
+		t.Helper()
+		sessions.setMode(mode)
+		sessions.setLaunchID(recorded)
+		sent := act("session-chief", "send", map[string]any{"recipient": "worker", "subject": name, "body": "probe", "key": name})
+		id, _ := sent["id"].(string)
+		if id == "" {
+			t.Fatalf("%s: send returned no id: %v", name, sent)
+		}
+		raw, err := service.Hook(ctx, "session-worker", "Stop", provided)
+		if err != nil {
+			t.Fatalf("%s: hook: %v", name, err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("%s: decode hook response: %v", name, err)
+		}
+		delivered := decoded["decision"] == "block"
+		if delivered != wantDelivered {
+			t.Fatalf("%s: hook read mail = %v, want %v (%s)", name, delivered, wantDelivered, raw)
+		}
+		_, err = service.call(ctx, project, "session-worker", "ack", map[string]any{"message": id})
+		if wantDelivered && err != nil {
+			t.Fatalf("%s: ack after delivery: %v", name, err)
+		}
+		if !wantDelivered && err == nil {
+			t.Fatalf("%s: ack succeeded although the hook was dropped", name)
+		}
+	}
+	hookCase("tui-current", domain.SessionModeTUI, "launch-live", "launch-live", true)
+	hookCase("tui-stale", domain.SessionModeTUI, "launch-live", "launch-dead", false)
+	hookCase("tui-legacy-hook", domain.SessionModeTUI, "launch-live", "", true)
+	hookCase("tui-prelaunch-record", domain.SessionModeTUI, "", "launch-live", true)
+	sessions.setMode(domain.SessionModeChat)
+	writeBoot("boot-live")
+	hookCase("chat-current", domain.SessionModeChat, "ignored", "boot-live", true)
+	hookCase("chat-stale", domain.SessionModeChat, "ignored", "boot-dead", false)
+	hookCase("chat-legacy-hook", domain.SessionModeChat, "ignored", "", true)
+	if err := os.Remove(filepath.Join(dataDir, "chat-hosts", "session-worker", "host.json")); err != nil {
+		t.Fatal(err)
+	}
+	hookCase("chat-no-descriptor", domain.SessionModeChat, "ignored", "boot-live", true)
 }

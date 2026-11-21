@@ -9155,6 +9155,7 @@ export interface components {
         };
         TeamHookRequest: {
             event: string;
+            launchId?: string;
         };
         TeamRequest: {
             arguments?: {
