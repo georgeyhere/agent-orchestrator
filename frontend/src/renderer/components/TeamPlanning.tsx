@@ -23,7 +23,7 @@ export function TeamPlanning({
 		event.preventDefault();
 		const values: Record<string, unknown> = Object.fromEntries(new FormData(event.currentTarget));
 		values.workers = new FormData(event.currentTarget).getAll("workers");
-		if (!values.chief) values.chief = null;
+		if (!values.supervisor) values.supervisor = null;
 		if (editing && editing !== "new") {
 			values.draft = editing.id;
 			values.revision = editing.revision;
@@ -35,7 +35,7 @@ export function TeamPlanning({
 			<div className="rounded-lg border p-5">
 				<h2 className="font-medium">Plan missions with your project planner</h2>
 				<p className="mt-2 text-sm text-muted-foreground">
-					Discuss the goal in the planner's conversation. It saves the objective, acceptance criteria, proposed chief,
+					Discuss the goal in the planner's conversation. It saves the objective, acceptance criteria, proposed supervisor,
 					and execution plan here. You review and release a draft when it is ready.
 				</p>
 				<div className="mt-4 flex flex-wrap items-center gap-3">
@@ -100,7 +100,7 @@ export function TeamPlanning({
 							/>
 						</label>
 					))}
-					<MissionStaffingFields agents={state.agents} chief={editing === "new" ? "" : editing.chief ?? ""} workers={editing === "new" ? [] : editing.workers} />
+					<MissionStaffingFields agents={state.agents} supervisor={editing === "new" ? "" : editing.supervisor ?? ""} workers={editing === "new" ? [] : editing.workers} />
 					<p className="text-xs text-muted-foreground">
 						Saving sends the draft to your planner. Execution starts only after you release a complete draft.
 					</p>
@@ -128,7 +128,7 @@ export function TeamPlanning({
 						</span>
 					</div>
 					<p className="mt-1 text-xs text-muted-foreground">
-						Planner {draft.planner} / proposed chief {draft.chief ?? "unassigned"}
+						Planner {draft.planner} / proposed supervisor {draft.supervisor ?? "unassigned"}
 					</p>
 					<p className="mt-1 text-sm">Assigned workers: {draft.workers?.join(", ") || "Unassigned"}</p>
 					<p className="mt-3 whitespace-pre-wrap text-sm">{draft.objective}</p>
@@ -142,7 +142,7 @@ export function TeamPlanning({
 								Edit draft {draft.id}
 							</Button>
 							<Button
-								disabled={busy || !draft.chief || !draft.workers?.length || !draft.criteria.trim() || !draft.plan.trim()}
+								disabled={busy || !draft.supervisor || !draft.workers?.length || !draft.criteria.trim() || !draft.plan.trim()}
 								onClick={() => void onAction("draft-release", { draft: draft.id, revision: draft.revision })}
 							>
 								Release mission {draft.id}
@@ -150,7 +150,9 @@ export function TeamPlanning({
 						</div>
 					) : (
 						<p className="mt-4 text-sm">
-							Released as mission {draft.mission}. Its chief owns execution; the orchestrator gives final signoff.
+							Released as mission {draft.mission}. {state.agents.find((agent) => agent.id === draft.supervisor)?.tier === "orchestrator"
+								? "The orchestrator owns execution and final signoff."
+								: "Its chief owns execution; the orchestrator gives final signoff."}
 						</p>
 					)}
 				</article>

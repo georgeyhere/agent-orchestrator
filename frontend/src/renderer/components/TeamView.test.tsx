@@ -98,6 +98,7 @@ function plannedState(): TeamState {
 		id: "csv-export",
 		planner: "project-planner",
 		chief: "chief-one",
+		supervisor: "chief-one",
 		workers: ["worker-one"],
 		objective: "Export filtered reports",
 		criteria: "Filters preserved",
@@ -122,13 +123,13 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("project teams", () => {
-	it("saves the selected chief and named workers in a mission spec", async () => {
+	it("saves the selected supervisor and named workers in a mission spec", async () => {
 		const state = structuredClone(initial);
 		for (const id of ["worker-b", "worker-c"]) state.agents.push({ ...state.agents[1], id, tier: "worker", role: "worker", parent: "chief-one" });
 		serve(state);
 		mount();
 		fireEvent.click(await screen.findByRole("button", { name: "Define mission" }));
-		fireEvent.change(screen.getByLabelText("Responsible chief"), { target: { value: "chief-one" } });
+		fireEvent.change(screen.getByLabelText("Responsible supervisor"), { target: { value: "chief-one" } });
 		fireEvent.change(screen.getByLabelText("Mission ID"), { target: { value: "staffed-export" } });
 		fireEvent.change(screen.getByLabelText("Objective"), { target: { value: "Export reports" } });
 		fireEvent.change(screen.getByLabelText("Acceptance criteria"), { target: { value: "Verified" } });
@@ -137,7 +138,7 @@ describe("project teams", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Save" }));
 		await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
 			params: { path: { projectId: "project" } }, body: { operation: "mission-create", arguments: {
-				mission: "staffed-export", chief: "chief-one", objective: "Export reports", criteria: "Verified", workers: ["worker-b", "worker-c"],
+				mission: "staffed-export", supervisor: "chief-one", objective: "Export reports", criteria: "Verified", workers: ["worker-b", "worker-c"],
 			} },
 		}));
 	});
@@ -152,7 +153,7 @@ describe("project teams", () => {
 
 	it("offers only the selected mission's staffed workers when assigning a task", async () => {
 		const state = structuredClone(initial);
-		for (const [id, worker] of [["first", "worker-b"], ["second", "worker-c"]]) state.missions.push({ id, chief: "chief-one", workers: [worker], orchestrator: "orch", objective: "Deliver", criteria: "Verify", status: "active", revision: 1, result: null, evidence: null, review: null });
+		for (const [id, worker] of [["first", "worker-b"], ["second", "worker-c"]]) state.missions.push({ id, chief: "chief-one", supervisor: "chief-one", workers: [worker], orchestrator: "orch", objective: "Deliver", criteria: "Verify", status: "active", revision: 1, result: null, evidence: null, review: null });
 		serve(state); mount();
 		fireEvent.click(await screen.findByRole("tab", { name: "Missions" }));
 		fireEvent.click(screen.getByRole("button", { name: "Assign worker task" }));
@@ -165,7 +166,7 @@ describe("project teams", () => {
 	it("revises a mission roster with its current revision and preserves a conflicting edit", async () => {
 		const state = plannedState();
 		for (const id of ["worker-b", "worker-c"]) state.agents.push({ ...state.agents[1], id, tier: "worker", role: "worker", parent: "chief-one" });
-		state.missions.push({ id: "staffed", chief: "chief-one", workers: ["worker-b"], orchestrator: "orch", objective: "Deliver", criteria: "Verified", status: "active", revision: 4, result: null, evidence: null, review: null });
+		state.missions.push({ id: "staffed", chief: "chief-one", supervisor: "chief-one", workers: ["worker-b"], orchestrator: "orch", objective: "Deliver", criteria: "Verified", status: "active", revision: 4, result: null, evidence: null, review: null });
 		serve(state); mount();
 		fireEvent.click(await screen.findByRole("tab", { name: "Missions" }));
 		fireEvent.click(screen.getByRole("button", { name: "Edit staffing for staffed" }));
@@ -331,7 +332,7 @@ describe("project teams", () => {
 						objective: "Explore export requirements",
 						criteria: "",
 						plan: "",
-						chief: null,
+						supervisor: null,
 						workers: [],
 					},
 				},
@@ -395,6 +396,7 @@ describe("project teams", () => {
 		state.missions.push({
 			id: "export",
 			chief: "chief-one",
+			supervisor: "chief-one",
 			orchestrator: "orch",
 			objective: "Ship export",
 			criteria: "Verified export",
@@ -424,7 +426,7 @@ describe("project teams", () => {
 		expect(within(chief).getByText("export / active")).toBeInTheDocument();
 		expect(within(chief).getByText("worker-one / worker")).toBeInTheDocument();
 		fireEvent.click(within(chief).getByRole("button", { name: "Transfer mission export" }));
-		fireEvent.change(screen.getByLabelText("New chief"), {
+		fireEvent.change(screen.getByLabelText("New supervisor"), {
 			target: { value: "chief-two" },
 		});
 		fireEvent.click(screen.getByRole("checkbox"));
@@ -436,7 +438,7 @@ describe("project teams", () => {
 					operation: "mission-reassign",
 					arguments: {
 						mission: "export",
-						chief: "chief-two",
+						supervisor: "chief-two",
 						revision: 3,
 						move_workers: true,
 					},
@@ -461,7 +463,7 @@ describe("project teams", () => {
 		serve(state);
 		mount();
 		fireEvent.click(await screen.findByRole("button", { name: "Move worker worker-one" }));
-		fireEvent.change(screen.getByLabelText("New chief"), {
+		fireEvent.change(screen.getByLabelText("New supervisor"), {
 			target: { value: "chief-two" },
 		});
 		fireEvent.click(screen.getByRole("button", { name: "Save assignment" }));
@@ -551,5 +553,133 @@ describe("project teams", () => {
 		expect(await screen.findByRole("button", { name: "Enable team" })).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Spawn agent" })).not.toBeInTheDocument();
 		expect(mocks.post).not.toHaveBeenCalled();
+	});
+
+	it("spawns a worker reporting directly to the orchestrator", async () => {
+		mount();
+		fireEvent.click(await screen.findByRole("button", { name: "Spawn agent" }));
+		expect(within(screen.getByLabelText("Supervisor")).getByRole("option", { name: "orch" })).toBeInTheDocument();
+		fireEvent.change(screen.getByLabelText("Supervisor"), { target: { value: "orch" } });
+		fireEvent.change(screen.getByLabelText("Agent ID"), { target: { value: "direct-worker" } });
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
+				params: { path: { projectId: "project" } },
+				body: {
+					operation: "agent-add",
+					arguments: { agent: "direct-worker", role: "worker", parent: "orch", mode: "tui", provider: "codex" },
+				},
+			}),
+		);
+	});
+
+	it("staffs a directly supervised mission with only the orchestrator's workers", async () => {
+		const state = structuredClone(initial);
+		state.agents.push(
+			{ ...state.agents[1], id: "worker-b", tier: "worker", role: "worker", parent: "chief-one" },
+			{ ...state.agents[1], id: "worker-d", tier: "worker", role: "worker", parent: "orch" },
+		);
+		serve(state);
+		mount();
+		fireEvent.click(await screen.findByRole("button", { name: "Define mission" }));
+		fireEvent.change(screen.getByLabelText("Responsible supervisor"), { target: { value: "orch" } });
+		expect(screen.queryByRole("checkbox", { name: /worker-b/ })).not.toBeInTheDocument();
+		fireEvent.click(screen.getByRole("checkbox", { name: /worker-d/ }));
+		fireEvent.change(screen.getByLabelText("Mission ID"), { target: { value: "direct-work" } });
+		fireEvent.change(screen.getByLabelText("Objective"), { target: { value: "Ship directly" } });
+		fireEvent.change(screen.getByLabelText("Acceptance criteria"), { target: { value: "Verified" } });
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		await waitFor(() => expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
+			params: { path: { projectId: "project" } }, body: { operation: "mission-create", arguments: {
+				mission: "direct-work", supervisor: "orch", objective: "Ship directly", criteria: "Verified", workers: ["worker-d"],
+			} },
+		}));
+	});
+
+	it("shows directly supervised missions and workers on the orchestrator card", async () => {
+		const state = structuredClone(initial);
+		state.agents.push({ ...state.agents[1], id: "worker-d", tier: "worker", role: "worker", parent: "orch" });
+		state.missions.push({ id: "direct", chief: "orch", supervisor: "orch", workers: ["worker-d"], orchestrator: "orch", objective: "Ship directly", criteria: "Verified", status: "active", revision: 1, result: null, evidence: null, review: null });
+		serve(state);
+		mount();
+		const card = await screen.findByRole("article", { name: "orchestrator orch" });
+		expect(within(card).getByText("direct / active")).toBeInTheDocument();
+		expect(within(card).getByText("worker-d / worker")).toBeInTheDocument();
+		fireEvent.click(within(card).getByRole("button", { name: "Transfer mission direct" }));
+		fireEvent.change(screen.getByLabelText("New supervisor"), { target: { value: "chief-one" } });
+		fireEvent.click(screen.getByRole("checkbox"));
+		fireEvent.click(screen.getByRole("button", { name: "Save assignment" }));
+		await waitFor(() =>
+			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
+				params: { path: { projectId: "project" } },
+				body: {
+					operation: "mission-reassign",
+					arguments: { mission: "direct", supervisor: "chief-one", revision: 1, move_workers: true },
+				},
+			}),
+		);
+	});
+
+	it("moves a direct worker to a chief from the orchestrator card", async () => {
+		const state = structuredClone(initial);
+		state.agents.push({ ...state.agents[1], id: "worker-d", tier: "worker", role: "worker", parent: "orch", revision: 2 });
+		serve(state);
+		mount();
+		const card = await screen.findByRole("article", { name: "orchestrator orch" });
+		fireEvent.click(within(card).getByRole("button", { name: "Move worker worker-d" }));
+		fireEvent.change(screen.getByLabelText("New supervisor"), { target: { value: "chief-one" } });
+		fireEvent.click(screen.getByRole("button", { name: "Save assignment" }));
+		await waitFor(() =>
+			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
+				params: { path: { projectId: "project" } },
+				body: {
+					operation: "agent-reparent",
+					arguments: { agent: "worker-d", parent: "chief-one", revision: 2 },
+				},
+			}),
+		);
+	});
+
+	it("releases a directly supervised draft and names the orchestrator as owner", async () => {
+		const state = plannedState();
+		state.agents.push({ ...state.agents[1], id: "worker-d", tier: "worker", role: "worker", parent: "orch" });
+		state.drafts.push({
+			id: "direct-plan",
+			planner: "project-planner",
+			chief: "orch",
+			supervisor: "orch",
+			workers: ["worker-d"],
+			objective: "Ship directly",
+			criteria: "Verified",
+			plan: "Build and verify",
+			status: "draft",
+			revision: 1,
+			mission: null,
+		});
+		serve(state);
+		mount();
+		fireEvent.click(await screen.findByRole("tab", { name: "Planning" }));
+		expect(screen.getByRole("button", { name: "Release mission direct-plan" })).toBeEnabled();
+		expect(screen.getByText("Planner project-planner / proposed supervisor orch")).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Release mission direct-plan" }));
+		await waitFor(() =>
+			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
+				params: { path: { projectId: "project" } },
+				body: { operation: "draft-release", arguments: { draft: "direct-plan", revision: 1 } },
+			}),
+		);
+	});
+
+	it("labels directly supervised missions in the missions view", async () => {
+		const state = structuredClone(initial);
+		state.missions.push(
+			{ id: "direct", chief: "orch", supervisor: "orch", workers: [], orchestrator: "orch", objective: "Ship directly", criteria: "Verified", status: "active", revision: 1, result: null, evidence: null, review: null },
+			{ id: "led", chief: "chief-one", supervisor: "chief-one", workers: [], orchestrator: "orch", objective: "Ship led", criteria: "Verified", status: "active", revision: 1, result: null, evidence: null, review: null },
+		);
+		serve(state);
+		mount();
+		fireEvent.click(await screen.findByRole("tab", { name: "Missions" }));
+		expect(screen.getByText("Directly supervised by orch · Revision 1")).toBeInTheDocument();
+		expect(screen.getByText("Supervisor chief-one · Final signoff orch · Revision 1")).toBeInTheDocument();
 	});
 });

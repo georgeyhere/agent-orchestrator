@@ -13,7 +13,7 @@ export function boardTeamAssignments(teams: Array<{ projectId: string; state: Te
 			result.set(`${projectId}:${agent.session_id}`, {
 				parentSessionId: parent?.session_id ?? undefined,
 				missions: state.missions.filter((mission) => mission.status !== "approved" && (
-					mission.chief === agent.id || mission.orchestrator === agent.id || mission.workers?.includes(agent.id)
+					mission.supervisor === agent.id || mission.orchestrator === agent.id || mission.workers?.includes(agent.id)
 				)).map(({ id, objective, status }) => ({ id, objective, status })),
 			});
 		}

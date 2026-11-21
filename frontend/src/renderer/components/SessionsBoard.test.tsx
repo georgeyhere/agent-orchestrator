@@ -218,7 +218,7 @@ describe("SessionsBoard", () => {
 		client.setQueryData(["project-team", chief.workspaceId], {
 			enabled: true,
 			agents: [ { id: "chief-0", session_id: chief.id, parent: null }, ...workers.map((worker) => ({ id: worker.id, session_id: worker.id, parent: "chief-0" })) ],
-			missions: [{ id: "ship-feature", chief: "chief-0", workers: workers.map((worker) => worker.id), status: "active", objective: "Ship the feature" }],
+			missions: [{ id: "ship-feature", chief: "chief-0", supervisor: "chief-0", workers: workers.map((worker) => worker.id), status: "active", objective: "Ship the feature" }],
 		});
 		renderBoardWithClient(client, chief.workspaceId);
 		const group = screen.getByRole("group", { name: "Agents reporting to chief-0 (chief)" });

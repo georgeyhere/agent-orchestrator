@@ -26,6 +26,7 @@ export type Mission = {
 	workers?: string[];
 	id: string;
 	chief: string;
+	supervisor: string;
 	orchestrator: string;
 	objective: string;
 	criteria: string;
@@ -72,6 +73,7 @@ export type MissionDraft = {
 	id: string;
 	planner: string;
 	chief: string | null;
+	supervisor: string | null;
 	objective: string;
 	criteria: string;
 	plan: string;
@@ -219,7 +221,12 @@ export function TeamView() {
 							label: "Supervisor",
 							options:
 								state?.agents
-									.filter((item) => item.tier === (roleTier === "chief" ? "orchestrator" : "chief"))
+									.filter((item) =>
+									roleTier === "chief"
+										? item.tier === "orchestrator"
+										: item.tier === "chief" || item.tier === "orchestrator",
+								)
+									.sort((left, right) => left.tier.localeCompare(right.tier))
 									.map((item) => item.id) ?? [],
 						},
 					]),
@@ -381,13 +388,13 @@ export function TeamView() {
 						<li>
 							<strong>2. Build your org chart</strong>
 							<p className="mt-1 text-muted-foreground">
-								Assign chiefs to an orchestrator and workers to chiefs. Each mission has a responsible chief.
+								Assign chiefs to an orchestrator and workers to chiefs or the orchestrator. Each mission has a responsible supervisor.
 							</p>
 						</li>
 						<li>
 							<strong>3. Execute and review</strong>
 							<p className="mt-1 text-muted-foreground">
-								Track missions and worker tasks. Chiefs submit results; the orchestrator gives final signoff.
+								Track missions and worker tasks. Supervisors review tasks and submit results; the orchestrator gives final signoff.
 							</p>
 						</li>
 					</ol>
@@ -518,7 +525,7 @@ export function TeamView() {
 							if (await execute("mission-staff", { mission: staffingMission.id, revision: staffingMission.revision, workers })) setStaffingMission(null);
 						}}>
 							<h2 className="font-medium">Staff mission {staffingMission.id}</h2>
-							<MissionStaffingFields key={staffingMission.id} agents={state.agents} chief={staffingMission.chief} workers={staffingMission.workers} fixedChief />
+							<MissionStaffingFields key={staffingMission.id} agents={state.agents} supervisor={staffingMission.supervisor} workers={staffingMission.workers} fixedSupervisor />
 							<Button disabled={busy}>Save staffing</Button>
 							<Button type="button" variant="ghost" onClick={() => setStaffingMission(null)}>Cancel</Button>
 						</form>}
@@ -629,7 +636,7 @@ export function TeamView() {
 								</div>
 								{tab === "workers" && !state.agents.some((agent) => agent.tier === "worker") && (
 									<p className="text-sm text-muted-foreground">
-										No workers yet. Use Spawn agent to add a worker under its chief.
+										No workers yet. Use Spawn agent to add a worker under a chief or the orchestrator.
 									</p>
 								)}
 								<h2 className="mb-3 mt-7 font-medium">Role definitions</h2>
@@ -657,7 +664,7 @@ export function TeamView() {
 									</Button>
 								</div>
 								{!state.missions.length && (
-									<p className="text-sm text-muted-foreground">Define a mission and acceptance criteria for a chief.</p>
+									<p className="text-sm text-muted-foreground">Define a mission and acceptance criteria for a supervisor.</p>
 								)}
 								<div className="space-y-4">
 									{state.missions.map((mission) => (
@@ -667,7 +674,9 @@ export function TeamView() {
 												<span className="text-sm">{mission.status}</span>
 											</div>
 											<p className="mt-1 text-xs text-muted-foreground">
-												Chief {mission.chief} · Final signoff {mission.orchestrator} · Revision {mission.revision}
+												{mission.supervisor === mission.orchestrator
+													? `Directly supervised by ${mission.supervisor}`
+													: `Supervisor ${mission.supervisor} · Final signoff ${mission.orchestrator}`} · Revision {mission.revision}
 											</p>
 											<p className="mt-3 whitespace-pre-wrap text-sm">{mission.objective}</p>
 											<p className="mt-3 text-sm">Assigned workers: {mission.workers?.join(", ") || "Unassigned — set staffing before assigning tasks"}</p>
