@@ -16,12 +16,17 @@ def now():
 
 DEFAULT_ROLES = {
     "planner": ("planner", "Work with the user to clarify mission objectives, scope, constraints, acceptance criteria, and an execution plan. Maintain revisioned mission drafts through draft-create and draft-update. Ask focused questions in your conversation. Only the human operator releases a draft for execution. Do not assign execution tasks or approve missions."),
-    "orchestrator": ("orchestrator", "Coordinate project chiefs. Define missions and acceptance criteria. Review evidence and give final mission signoff or request changes."),
+    "orchestrator": ("orchestrator", "Coordinate project chiefs. Define missions and acceptance criteria. Review evidence and give final mission signoff or request changes. You may also supervise workers directly: assign tasks only to staffed direct reports, review each submission, then record mission results and explicit final signoff."),
     "chief": ("chief", "Drive your mission to completion. Assign bounded tasks to workers, resolve blockers, verify their results, and submit the mission for orchestrator review."),
-    "worker": ("worker", "Complete your assigned tasks, verify the result, and report precise evidence to your chief. Escalate blockers promptly."),
+    "worker": ("worker", "Complete your assigned tasks, verify the result, and report precise evidence to your supervisor: your chief, or your orchestrator on a directly supervised mission. Escalate blockers promptly."),
 }
 
 
+# Supervisor representation: `supervisor` is the canonical direct supervisor of a
+# draft or mission and names either a chief or the project orchestrator. The
+# supervisor's tier is the supervision mode, so no mode flag can drift. `chief`
+# mirrors the supervisor ID so the existing chief-led contract keeps reading
+# the same way; new readers use `supervisor`.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS roles (
@@ -32,11 +37,13 @@ CREATE TABLE IF NOT EXISTS agents (
  last_error TEXT, cancelled INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS missions (
  id TEXT PRIMARY KEY, chief TEXT NOT NULL REFERENCES agents(id),
+ supervisor TEXT REFERENCES agents(id),
  orchestrator TEXT NOT NULL REFERENCES agents(id), objective TEXT NOT NULL, criteria TEXT NOT NULL,
  status TEXT NOT NULL DEFAULT 'active', revision INTEGER NOT NULL DEFAULT 1,
  result TEXT, evidence TEXT, review TEXT, plan TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS drafts (
  id TEXT PRIMARY KEY, planner TEXT NOT NULL REFERENCES agents(id), chief TEXT REFERENCES agents(id),
+ supervisor TEXT REFERENCES agents(id),
  objective TEXT NOT NULL, criteria TEXT NOT NULL DEFAULT '', plan TEXT NOT NULL DEFAULT '',
  status TEXT NOT NULL DEFAULT 'draft', revision INTEGER NOT NULL DEFAULT 1,
  mission TEXT UNIQUE REFERENCES missions(id));
@@ -69,16 +76,21 @@ class Store:
             db.executescript(SCHEMA)
             db.execute("BEGIN IMMEDIATE")
             version = db.execute("SELECT value FROM settings WHERE key='schema'").fetchone()
-            if version and version[0] not in {"1", "2", "3"}:
+            if version and version[0] not in {"1", "2", "3", "4"}:
                 raise ContractError("Unsupported state schema")
             # Additive upgrade of the Python-owned database preserves live teams.
             for table, column, declaration in (("agents", "revision", "INTEGER NOT NULL DEFAULT 1"),
-                                                ("missions", "plan", "TEXT NOT NULL DEFAULT ''")):
+                                                ("missions", "plan", "TEXT NOT NULL DEFAULT ''"),
+                                                ("missions", "supervisor", "TEXT REFERENCES agents(id)"),
+                                                ("drafts", "supervisor", "TEXT REFERENCES agents(id)")):
                 if column not in {row[1] for row in db.execute(f"PRAGMA table_info({table})")}:
                     db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
             if version and version[0] in {"1", "2"}:
                 db.execute("INSERT OR IGNORE INTO mission_workers SELECT DISTINCT mission,worker FROM tasks")
-            db.execute("INSERT OR REPLACE INTO settings VALUES ('schema','3')")
+            if version and version[0] in {"1", "2", "3"}:
+                db.execute("UPDATE missions SET supervisor=chief WHERE supervisor IS NULL")
+                db.execute("UPDATE drafts SET supervisor=chief WHERE supervisor IS NULL")
+            db.execute("INSERT OR REPLACE INTO settings VALUES ('schema','4')")
             binding = config.project / ".llmwiki.json"
             if binding.exists():
                 identity = json.loads(binding.read_text(encoding="utf-8"))
@@ -125,15 +137,28 @@ class Store:
             result["workers"] = [r[0] for r in db.execute(f"SELECT worker FROM {owner}_workers WHERE {owner}=? ORDER BY worker", (key,))]
         return result
 
-    def validate_workers(self, db, workers, chief, required=False):
+    def resolve_supervisor(self, db, chief, supervisor, require=False):
+        """Accept the explicit supervisor or the legacy chief-only shape."""
+        if chief is not None and self.get(db, "agents", chief)["tier"] != "chief":
+            raise ContractError("chief names a mission chief; name the project orchestrator with supervisor")
+        if supervisor is not None and self.get(db, "agents", supervisor)["tier"] not in {"chief", "orchestrator"}:
+            raise ContractError("supervisor names a mission chief or the project orchestrator")
+        if chief is not None and supervisor is not None and chief != supervisor:
+            raise ContractError("chief and supervisor name different supervisors")
+        chosen = supervisor if supervisor is not None else chief
+        if chosen is None and require:
+            raise ContractError("Name a mission chief or the project orchestrator as supervisor")
+        return chosen
+
+    def validate_workers(self, db, workers, supervisor, required=False):
         if not isinstance(workers, list) or any(not isinstance(w, str) for w in workers) or len(set(workers)) != len(workers):
             raise ContractError("Workers must be a list of distinct agent IDs")
         if required and not workers:
             raise ContractError("Assign at least one worker in the mission spec")
         for worker in workers:
             target = self.get(db, "agents", worker)
-            if target["tier"] != "worker" or not chief or target["parent"] != chief:
-                raise ContractError("Each mission worker must report to the selected chief")
+            if target["tier"] != "worker" or not supervisor or target["parent"] != supervisor:
+                raise ContractError("Each mission worker must report to the selected supervisor")
         return sorted(workers)
 
     @staticmethod
@@ -182,11 +207,13 @@ class Store:
                 raise ContractError(f"Each project team has one {tier}")
         else:
             supervisor = self.get(db, "agents", parent)
-            expected = {"chief": "orchestrator", "worker": "chief"}[tier]
-            if supervisor["tier"] != expected:
-                raise ContractError(f"{tier} needs a {expected} parent")
-            if caller and caller["tier"] == "orchestrator" and tier == "worker" and supervisor["parent"] != actor:
-                raise ContractError("Worker chief must belong to this orchestrator")
+            if tier == "chief":
+                if supervisor["tier"] != "orchestrator":
+                    raise ContractError("chief needs an orchestrator parent")
+            elif supervisor["tier"] not in {"chief", "orchestrator"}:
+                raise ContractError("worker needs a chief or orchestrator parent")
+            if caller and caller["tier"] == "orchestrator" and tier == "worker" and parent != actor and supervisor["parent"] != actor:
+                raise ContractError("Worker supervisor must belong to this orchestrator")
             if caller and tier == "chief" and parent != actor:
                 raise ContractError("Chief must belong to this orchestrator")
         db.execute("INSERT INTO agents(id,tier,role,parent,provider) VALUES (?,?,?,?,?)", (agent, tier, role, parent, provider))

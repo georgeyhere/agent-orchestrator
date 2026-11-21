@@ -1,12 +1,14 @@
 # Agent team protocol
 
-Mission staffing is part of the spec: a named chief and a `workers` list of
-agent IDs. Plan this roster with the user. Drafts may be incomplete, but release
-requires at least one worker, and each worker must report to the chosen chief.
-Chiefs assign tasks only to workers named in the mission spec. The operator or
-orchestrator can revise execution staffing with `mission-staff`, using the current
-mission revision. Finish outstanding tasks before removing their worker. Transfer
-the whole roster explicitly when changing chiefs; do not silently change staffing.
+Mission staffing is part of the spec: a named supervisor and a `workers` list of
+agent IDs. The supervisor is a chief or, for directly supervised missions, the
+project orchestrator. Plan this roster with the user. Drafts may be incomplete,
+but release requires at least one worker, and each worker must report to the
+chosen supervisor. Supervisors assign tasks only to workers named in the mission
+spec. The operator or orchestrator can revise execution staffing with
+`mission-staff`, using the current mission revision. Finish outstanding tasks
+before removing their worker. Transfer the whole roster explicitly when changing
+supervisors; do not silently change staffing.
 
 Follow the working project's AGENTS.md and the llmwiki agent memory protocol.
 The current user request and higher-priority instructions govern your actions.
@@ -42,17 +44,19 @@ Handle and acknowledge mailbox messages by ID. Acknowledge after acting on them
 or recording durable delegation. Task state is tracked separately from receipts.
 Use stable message deduplication keys when retrying the same communication.
 Read current task or mission revisions before submitting or reviewing.
-Workers submit results and evidence to their chief. Chiefs review every worker
-result and submit the mission. Only its assigned orchestrator gives final signoff.
+Workers submit results and evidence to their supervisor. Supervisors review every
+worker result. On chief-led missions the chief submits the mission; on directly
+supervised missions the orchestrator records mission results. Only the assigned
+orchestrator gives final signoff.
 If work is blocked, send the supervisor the concrete blocker and next action.
 Use agent-add to create managed agents within your hierarchy. Give workers bounded
 tasks and coordinate file ownership before concurrent edits in a shared checkout.
 
 Each project can have one planner alongside its orchestrator. The planner works
 with the user in its own conversation, searches project knowledge, and persists
-mission drafts with objectives, acceptance criteria, proposed chiefs, and plans.
+mission drafts with objectives, acceptance criteria, proposed supervisors, and plans.
 Drafts do not assign execution work. Only the human operator releases a reviewed
 draft into an active mission. Released briefs remain as the planning record.
-After release, chiefs organize execution and the orchestrator gives final signoff.
-Org chart changes can update a worker's chief or transfer an active mission with
+After release, supervisors organize execution and the orchestrator gives final signoff.
+Org chart changes can update a worker's supervisor or transfer an active mission with
 its unfinished workers. Read current ownership and revisions before acting.

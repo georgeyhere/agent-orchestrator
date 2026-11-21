@@ -278,6 +278,18 @@ class TeamTests(unittest.TestCase):
         self.action("mission-create", {"mission": "mission", "chief": "chief", "objective": "Build feature", "criteria": "Tests pass", "workers": ["worker"]}, "orch")
         self.action("task-assign", {"task": "task", "mission": "mission", "worker": "worker", "objective": "Implement feature"}, "chief")
 
+    def direct_worker(self, agent="direct-worker"):
+        self.action("agent-add", {"agent": agent, "role": "worker", "parent": "orch"}, "orch")
+        Team(self.request | {"operation": "attach", "arguments": {"agent": agent, "session_id": "session-" + agent}}).execute()
+        self.clear_mail(agent)
+        return agent
+
+    def direct_mission(self, mission="direct", worker="direct-worker", task="direct-task"):
+        self.direct_worker(worker)
+        created = self.action("mission-create", {"mission": mission, "supervisor": "orch", "objective": "Direct work", "criteria": "Verified", "workers": [worker]}, "orch")
+        self.action("task-assign", {"task": task, "mission": mission, "worker": worker, "objective": "Do direct work"}, "orch")
+        return created
+
     def test_full_mission_requires_chief_review_and_orchestrator_signoff(self):
         self.mission()
         with self.assertRaises(ContractError):
@@ -289,6 +301,155 @@ class TeamTests(unittest.TestCase):
             self.action("review", {"kind": "mission", "record": "mission", "revision": 2, "approve": True, "feedback": "Self approve"}, "chief")
         result = self.action("review", {"kind": "mission", "record": "mission", "revision": 2, "approve": True, "feedback": "Final signoff"}, "orch")
         self.assertEqual(result["status"], "approved")
+
+    def test_direct_mission_runs_through_orchestrator_review_and_signoff(self):
+        created = self.direct_mission()
+        self.assertEqual(created["supervisor"], "orch")
+        self.assertEqual(created["chief"], "orch")
+        self.assertEqual(created["orchestrator"], "orch")
+        self.assertIn("Supervisor: orch", json.dumps(self.action("inbox", actor="direct-worker")))
+        with self.assertRaises(ContractError):
+            self.action("task-assign", {"task": "intrusion", "mission": "direct", "worker": "direct-worker", "objective": "Chief work"}, "chief")
+        with self.assertRaises(ContractError):
+            self.action("submit", {"kind": "mission", "record": "direct", "revision": 1, "result": "Done", "evidence": "Checks"}, "orch")
+        self.action("submit", {"kind": "task", "record": "direct-task", "revision": 1, "result": "Done", "evidence": "Unit test passed"}, "direct-worker")
+        self.assertIn("Review task direct-task", json.dumps(self.action("inbox", actor="orch")))
+        with self.assertRaises(ContractError):
+            self.action("review", {"kind": "task", "record": "direct-task", "revision": 1, "approve": True, "feedback": "Stale"}, "orch")
+        with self.assertRaises(ContractError):
+            self.action("review", {"kind": "task", "record": "direct-task", "revision": 2, "approve": True, "feedback": "Chief review"}, "chief")
+        self.clear_mail("orch")
+        output = Team(self.request | {"operation": "wake", "arguments": {"agent": "orch"}}).execute()
+        self.assertTrue(output["needed"])
+        self.action("review", {"kind": "task", "record": "direct-task", "revision": 2, "approve": False, "feedback": "Fix"}, "orch")
+        self.action("submit", {"kind": "task", "record": "direct-task", "revision": 3, "result": "Fixed", "evidence": "New test"}, "direct-worker")
+        self.action("review", {"kind": "task", "record": "direct-task", "revision": 4, "approve": True, "feedback": "Verified"}, "orch")
+        self.assertIn("Task direct-task accepted", json.dumps(self.action("inbox", actor="direct-worker")))
+        with self.assertRaises(ContractError):
+            self.action("submit", {"kind": "mission", "record": "direct", "revision": 1, "result": "Done", "evidence": "Checks"}, "chief")
+        self.action("submit", {"kind": "mission", "record": "direct", "revision": 1, "result": "Integrated", "evidence": "Integration test passed"}, "orch")
+        self.assertIn("Review mission direct", json.dumps(self.action("inbox", actor="orch")))
+        self.action("review", {"kind": "mission", "record": "direct", "revision": 2, "approve": False, "feedback": "More evidence"}, "orch")
+        self.action("submit", {"kind": "mission", "record": "direct", "revision": 3, "result": "Integrated", "evidence": "Full suite passed"}, "orch")
+        result = self.action("review", {"kind": "mission", "record": "direct", "revision": 4, "approve": True, "feedback": "Final signoff"}, "orch")
+        self.assertEqual(result["status"], "approved")
+        self.clear_mail("orch")
+        output = Team(self.request | {"operation": "wake", "arguments": {"agent": "orch"}}).execute()
+        self.assertFalse(output["needed"])
+
+    def test_mission_rosters_reject_workers_outside_the_selected_supervisor(self):
+        self.direct_worker()
+        with self.assertRaises(ContractError):
+            self.action("mission-create", {"mission": "direct", "supervisor": "orch", "objective": "Work", "criteria": "Verify", "workers": ["worker"]}, "orch")
+        with self.assertRaises(ContractError):
+            self.action("mission-create", {"mission": "mixed", "chief": "chief", "objective": "Work", "criteria": "Verify", "workers": ["direct-worker"]}, "orch")
+        created = self.action("mission-create", {"mission": "legacy", "chief": "chief", "objective": "Work", "criteria": "Verify", "workers": ["worker"]}, "orch")
+        self.assertEqual(created["supervisor"], "chief")
+        with self.assertRaisesRegex(ContractError, "supervisor"):
+            self.action("mission-create", {"mission": "named", "chief": "orch", "objective": "Work", "criteria": "Verify", "workers": ["direct-worker"]}, "orch")
+        with self.assertRaises(ContractError):
+            self.action("mission-create", {"mission": "conflict", "chief": "chief", "supervisor": "orch", "objective": "Work", "criteria": "Verify", "workers": ["worker"]}, "orch")
+        with self.assertRaises(ContractError):
+            self.action("mission-create", {"mission": "invalid", "supervisor": "worker", "objective": "Work", "criteria": "Verify", "workers": ["worker"]}, "orch")
+        with self.assertRaises(ContractError):
+            self.action("mission-create", {"mission": "unsupervised", "objective": "Work", "criteria": "Verify", "workers": ["worker"]}, "orch")
+        agreed = self.action("mission-create", {"mission": "agreed", "chief": "chief", "supervisor": "chief", "objective": "Work", "criteria": "Verify", "workers": ["worker"]}, "orch")
+        self.assertEqual(agreed["supervisor"], "chief")
+
+    def test_orchestrator_creates_direct_workers_with_parent_checks(self):
+        self.action("agent-add", {"agent": "direct-one", "role": "worker", "parent": "orch"}, "orch")
+        with self.assertRaises(ContractError):
+            self.action("agent-add", {"agent": "direct-two", "role": "worker", "parent": "orch"}, "chief")
+        with self.assertRaisesRegex(ContractError, "chief or orchestrator parent"):
+            self.action("agent-add", {"agent": "bad-worker", "role": "worker", "parent": "worker"})
+        self.action("agent-add", {"agent": "operator-direct", "role": "worker", "parent": "orch"})
+        self.action("agent-control", {"agent": "direct-one", "action": "pause"}, "orch")
+        with self.assertRaisesRegex(ContractError, "direct supervisor"):
+            self.action("agent-control", {"agent": "direct-one", "action": "resume"}, "chief")
+        self.action("agent-control", {"agent": "direct-one", "action": "resume"}, "orch")
+
+    def test_direct_draft_release_requires_supervisor_and_staffing(self):
+        self.planner()
+        self.direct_worker()
+        self.action("draft-create", {"draft": "direct-plan", "objective": "Ship directly", "criteria": "Verified", "plan": "Build and verify", "supervisor": "orch", "workers": ["direct-worker"]}, "planner")
+        with self.assertRaises(ContractError):
+            self.action("draft-release", {"draft": "direct-plan", "revision": 1}, "orch")
+        with self.assertRaises(ContractError):
+            self.action("draft-release", {"draft": "direct-plan", "revision": 1}, "planner")
+        mission = self.action("draft-release", {"draft": "direct-plan", "revision": 1})
+        self.assertEqual(mission["supervisor"], "orch")
+        self.assertEqual(mission["workers"], ["direct-worker"])
+        self.assertIn("supervisor orch", json.dumps(self.action("inbox", actor="planner")))
+        self.assertTrue(self.action("inbox", actor="orch"))
+        self.action("draft-create", {"draft": "bare", "objective": "Discuss this goal"})
+        self.action("draft-update", {"draft": "bare", "revision": 1, "objective": "Discuss goal", "criteria": "Tests pass", "plan": "Build and verify"}, "planner")
+        with self.assertRaisesRegex(ContractError, "supervisor"):
+            self.action("draft-release", {"draft": "bare", "revision": 2})
+        with self.assertRaises(ContractError):
+            self.action("draft-update", {"draft": "bare", "revision": 2, "objective": "Discuss goal", "criteria": "Tests pass", "plan": "Build and verify", "supervisor": "orch", "workers": ["worker"]}, "planner")
+
+    def test_supervisor_changes_keep_revision_and_unfinished_work_protections(self):
+        self.second_chief()
+        self.direct_worker()
+        moved = self.action("agent-reparent", {"agent": "worker", "parent": "orch", "revision": 1})
+        self.assertEqual((moved["parent"], moved["revision"]), ("orch", 2))
+        self.assertIn("now reports to orch", json.dumps(self.action("inbox", actor="worker")))
+        moved = self.action("agent-reparent", {"agent": "worker", "parent": "chief", "revision": 2}, "orch")
+        self.assertEqual(moved["parent"], "chief")
+        with self.assertRaises(ContractError):
+            self.action("agent-reparent", {"agent": "worker", "parent": "orch", "revision": 2})
+        with self.assertRaises(ContractError):
+            self.action("agent-reparent", {"agent": "worker", "parent": "orch", "revision": 3}, "chief")
+        self.mission()
+        with self.assertRaises(ContractError):
+            self.action("agent-reparent", {"agent": "worker", "parent": "orch", "revision": 3})
+        with self.assertRaises(ContractError):
+            self.action("mission-reassign", {"mission": "mission", "revision": 1, "supervisor": "orch"})
+        moved = self.action("mission-reassign", {"mission": "mission", "revision": 1, "supervisor": "orch", "move_workers": True}, "orch")
+        self.assertEqual(moved["supervisor"], "orch")
+        self.assertEqual(next(a for a in self.action("status")["agents"] if a["id"] == "worker")["parent"], "orch")
+        self.action("submit", {"kind": "task", "record": "task", "revision": 2, "result": "Done", "evidence": "Test"}, "worker")
+        with self.assertRaises(ContractError):
+            self.action("review", {"kind": "task", "record": "task", "revision": 3, "approve": True, "feedback": "Old chief"}, "chief")
+        self.action("review", {"kind": "task", "record": "task", "revision": 3, "approve": True, "feedback": "Verified"}, "orch")
+        with self.assertRaises(ContractError):
+            self.action("mission-reassign", {"mission": "mission", "revision": 1, "supervisor": "chief-two", "move_workers": True})
+        self.action("mission-staff", {"mission": "mission", "revision": 2, "workers": ["direct-worker"]}, "orch")
+        self.assertEqual(self.action("status")["missions"][0]["workers"], ["direct-worker"])
+
+    def test_schema_three_upgrade_backfills_supervisor_and_keeps_chief_flows(self):
+        self.mission()
+        team = Team(self.request); team.open()
+        with team.store.connect(True) as db:
+            db.execute("ALTER TABLE missions DROP COLUMN supervisor")
+            db.execute("ALTER TABLE drafts DROP COLUMN supervisor")
+            db.execute("UPDATE settings SET value='3' WHERE key='schema'")
+        state = self.action("status")
+        self.assertEqual(state["missions"][0]["supervisor"], "chief")
+        self.assertEqual(state["missions"][0]["chief"], "chief")
+        self.action("submit", {"kind": "task", "record": "task", "revision": 1, "result": "Done", "evidence": "Test"}, "worker")
+        self.action("review", {"kind": "task", "record": "task", "revision": 2, "approve": True, "feedback": "Verified"}, "chief")
+        self.action("submit", {"kind": "mission", "record": "mission", "revision": 1, "result": "Integrated", "evidence": "Checks"}, "chief")
+        result = self.action("review", {"kind": "mission", "record": "mission", "revision": 2, "approve": True, "feedback": "Final signoff"}, "orch")
+        self.assertEqual(result["status"], "approved")
+        self.direct_worker()
+        created = self.action("mission-create", {"mission": "direct", "supervisor": "orch", "objective": "Work", "criteria": "Verify", "workers": ["direct-worker"]}, "orch")
+        self.assertEqual(created["supervisor"], "orch")
+
+    def test_block_and_unblock_follow_the_recorded_supervisor(self):
+        self.direct_mission()
+        self.action("block", {"kind": "task", "record": "direct-task", "revision": 1, "reason": "Need fixture"}, "direct-worker")
+        with self.assertRaises(ContractError):
+            self.action("unblock", {"kind": "task", "record": "direct-task", "revision": 2}, "chief")
+        result = self.action("unblock", {"kind": "task", "record": "direct-task", "revision": 2}, "orch")
+        self.assertEqual(result["status"], "assigned")
+        with self.assertRaises(ContractError):
+            self.action("block", {"kind": "mission", "record": "direct", "revision": 1, "reason": "Waiting"}, "chief")
+        self.action("block", {"kind": "mission", "record": "direct", "revision": 1, "reason": "Waiting"}, "orch")
+        with self.assertRaises(ContractError):
+            self.action("task-assign", {"task": "second", "mission": "direct", "worker": "direct-worker", "objective": "Another"}, "orch")
+        result = self.action("unblock", {"kind": "mission", "record": "direct", "revision": 2}, "orch")
+        self.assertEqual(result["status"], "active")
 
     def test_stale_review_cannot_replace_a_new_submission(self):
         self.mission()

@@ -8,7 +8,7 @@ class Workflow:
     def __init__(self, store):
         self.store = store
 
-    def create_mission(self, actor, mission, chief, objective, criteria, plan="", workers=None):
+    def create_mission(self, actor, mission, objective, criteria, chief=None, supervisor=None, plan="", workers=None):
         identifier(mission)
         text(objective, "objective")
         text(criteria, "acceptance criteria")
@@ -16,22 +16,29 @@ class Workflow:
             text(plan, "execution plan")
         s = self.store
         with s.connect(True) as db:
-            return self.register_mission(db, actor, mission, chief, objective, criteria, plan, workers)
+            return self.register_mission(db, actor, mission, objective, criteria, chief, supervisor, plan, workers)
 
-    def register_mission(self, db, actor, mission, chief, objective, criteria, plan="", workers=None):
+    def register_mission(self, db, actor, mission, objective, criteria, chief=None, supervisor=None, plan="", workers=None):
         s = self.store
         s.require(db, actor, {"orchestrator"})
-        leader = s.get(db, "agents", chief)
-        if leader["tier"] != "chief" or (actor != "operator" and leader["parent"] != actor):
-            raise ContractError("Assign missions to a chief under this orchestrator")
-        workers = s.validate_workers(db, workers, chief, required=True)
-        db.execute("INSERT INTO missions(id,chief,orchestrator,objective,criteria,plan) VALUES (?,?,?,?,?,?)",
-                   (mission, chief, leader["parent"], objective, criteria, plan))
+        supervisor = s.resolve_supervisor(db, chief, supervisor, require=True)
+        leader = s.get(db, "agents", supervisor)
+        if leader["tier"] == "chief":
+            if actor != "operator" and leader["parent"] != actor:
+                raise ContractError("Assign missions to a chief under this orchestrator")
+            orchestrator = leader["parent"]
+        else:
+            if actor != "operator" and leader["id"] != actor:
+                raise ContractError("Directly supervised missions belong to the assigning orchestrator")
+            orchestrator = leader["id"]
+        workers = s.validate_workers(db, workers, supervisor, required=True)
+        db.execute("INSERT INTO missions(id,chief,supervisor,orchestrator,objective,criteria,plan) VALUES (?,?,?,?,?,?,?)",
+                   (mission, supervisor, supervisor, orchestrator, objective, criteria, plan))
         s.set_workers(db, "mission", mission, workers)
-        s.event(db, actor, "mission.created", {"id": mission, "chief": chief})
-        s._send(db, actor, chief, f"Mission {mission}", json.dumps(s.get(db, "missions", mission)))
+        s.event(db, actor, "mission.created", {"id": mission, "chief": supervisor, "supervisor": supervisor})
+        s._send(db, actor, supervisor, f"Mission {mission}", json.dumps(s.get(db, "missions", mission)))
         for worker in workers:
-            s._send(db, actor, worker, f"Staffed on mission {mission}", f"Chief: {chief}. Objective: {objective}. Wait for a task from your chief.")
+            s._send(db, actor, worker, f"Staffed on mission {mission}", f"Supervisor: {supervisor}. Objective: {objective}. Wait for a task from your supervisor.")
         return s.get(db, "missions", mission)
 
     def assign_task(self, actor, task, mission, worker, objective):
@@ -41,12 +48,12 @@ class Workflow:
         with s.connect(True) as db:
             item = s.get(db, "missions", mission)
             target = s.get(db, "agents", worker)
-            if actor not in {"operator", item["chief"]}:
-                raise ContractError("Only the mission chief can assign its tasks")
+            if actor not in {"operator", item["supervisor"]}:
+                raise ContractError("Only the mission supervisor can assign its tasks")
             if item["status"] != "active":
                 raise ContractError("Tasks can be assigned while a mission is active")
-            if target["tier"] != "worker" or target["parent"] != item["chief"]:
-                raise ContractError("Task worker must belong to the mission chief")
+            if target["tier"] != "worker" or target["parent"] != item["supervisor"]:
+                raise ContractError("Task worker must belong to the mission supervisor")
             if worker not in item["workers"]:
                 raise ContractError("Task worker must be explicitly staffed in the mission spec")
             busy = db.execute("SELECT 1 FROM tasks WHERE worker=? AND status!='accepted'", (worker,)).fetchone()
@@ -68,7 +75,7 @@ class Workflow:
         table = kind + "s"
         with s.connect(True) as db:
             item = s.get(db, table, record)
-            expected_actor = item["worker"] if kind == "task" else item["chief"]
+            expected_actor = item["worker"] if kind == "task" else item["supervisor"]
             allowed_status = "assigned" if kind == "task" else "active"
             if actor != expected_actor:
                 raise ContractError("Submission requires the assigned agent")
@@ -77,13 +84,13 @@ class Workflow:
             if kind == "mission":
                 unfinished = db.execute("SELECT id FROM tasks WHERE mission=? AND status!='accepted'", (record,)).fetchall()
                 if unfinished:
-                    raise ContractError("Chief must review and accept every task before submitting the mission")
+                    raise ContractError("Review and accept every task before submitting the mission")
                 reviewer = item["orchestrator"]
             else:
                 mission = s.get(db, "missions", item["mission"])
                 if mission["status"] != "active":
                     raise ContractError("Task mission must be active")
-                reviewer = mission["chief"]
+                reviewer = mission["supervisor"]
             db.execute(f"UPDATE {table} SET status='review',revision=revision+1,result=?,evidence=? WHERE id=?", (result, evidence, record))
             s.event(db, actor, kind + ".submitted", {"id": record, "revision": revision + 1})
             s._send(db, actor, reviewer, f"Review {kind} {record}", json.dumps(s.get(db, table, record)))
@@ -100,11 +107,11 @@ class Workflow:
         with s.connect(True) as db:
             item = s.get(db, table, record)
             if kind == "mission":
-                reviewer, recipient = item["orchestrator"], item["chief"]
+                reviewer, recipient = item["orchestrator"], item["supervisor"]
                 status = "approved" if approve else "active"
             else:
                 mission = s.get(db, "missions", item["mission"])
-                reviewer, recipient = mission["chief"], item["worker"]
+                reviewer, recipient = mission["supervisor"], item["worker"]
                 status = "accepted" if approve else "assigned"
             if actor != reviewer:
                 raise ContractError(f"Review requires {reviewer}")

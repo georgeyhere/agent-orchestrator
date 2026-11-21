@@ -176,14 +176,14 @@ class Team:
                 + "\nUse `ao team status` and `ao team inbox` to inspect actionable work. "
                 "Use `ao team act OPERATION --file arguments.json` for team actions. "
                 "The operations are role-add(role,tier,instructions), agent-add(agent,role,parent,provider,mode), "
-                "mission-create(mission,chief,objective,criteria), task-assign(task,mission,worker,objective), "
+                "mission-create(mission,supervisor,objective,criteria), task-assign(task,mission,worker,objective), "
                 "submit(kind,record,revision,result,evidence), review(kind,record,revision,approve,feedback), "
                 "send(recipient,subject,body,key), ack(message), block(kind,record,revision,reason), unblock(kind,record,revision), "
-                "Mission specs explicitly name the chief and workers. Tasks can only go to staffed workers. "
-                "Drafts may be incomplete; release needs at least one worker reporting to the chosen chief. "
-                "draft-create(draft,objective,criteria,plan,chief,workers), draft-update(draft,revision,objective,criteria,plan,chief,workers), "
-                "mission-create(mission,chief,objective,criteria,plan,workers), mission-staff(mission,revision,workers), "
-                "agent-reparent(agent,parent,revision), mission-reassign(mission,chief,revision,move_workers). "
+                "Mission specs explicitly name the supervisor (a chief or the project orchestrator) and workers. Tasks can only go to staffed workers. "
+                "Drafts may be incomplete; release needs at least one worker reporting to the chosen supervisor. "
+                "draft-create(draft,objective,criteria,plan,supervisor,workers), draft-update(draft,revision,objective,criteria,plan,supervisor,workers), "
+                "mission-create(mission,supervisor,objective,criteria,plan,workers), mission-staff(mission,revision,workers), "
+                "agent-reparent(agent,parent,revision), mission-reassign(mission,revision,supervisor,move_workers). "
                 "Drafts stay separate from execution until the human operator uses draft-release(draft,revision). "
                 "The planner collaborates with the user on the brief and plan, and cannot launch execution or give final signoff. "
                 "Org chart changes preserve task ownership and notify affected agents. Read current supervisors from ao team status; they may change after launch. "
@@ -221,8 +221,9 @@ class Team:
         table = kind + "s"
         with self.store.connect(True) as db:
             item = self.store.get(db, table, record)
-            owner = item["worker"] if kind == "task" else item["chief"]
-            supervisor = self.store.get(db, "missions", item["mission"])["chief"] if kind == "task" else item["orchestrator"]
+            subject = self.store.get(db, "missions", item["mission"]) if kind == "task" else item
+            owner = item["worker"] if kind == "task" else subject["supervisor"]
+            supervisor = subject["supervisor"] if kind == "task" else subject["orchestrator"]
             if actor not in {owner, supervisor}:
                 raise ContractError("Only the assigned agent or its supervisor can change a blocker")
             expected = ("assigned" if kind == "task" else "active") if reason is not None else "blocked"
@@ -279,10 +280,12 @@ class Team:
             elif item["tier"] == "worker":
                 due = bool(db.execute("SELECT 1 FROM tasks WHERE worker=? AND status='assigned'", (agent,)).fetchone())
             elif item["tier"] == "chief":
-                due = bool(db.execute("SELECT 1 FROM tasks t JOIN missions m ON m.id=t.mission WHERE m.chief=? AND t.status='review'", (agent,)).fetchone())
-                due = due or bool(db.execute("SELECT 1 FROM missions m WHERE chief=? AND status='active' AND NOT EXISTS (SELECT 1 FROM tasks WHERE mission=m.id AND status!='accepted')", (agent,)).fetchone())
+                due = bool(db.execute("SELECT 1 FROM tasks t JOIN missions m ON m.id=t.mission WHERE m.supervisor=? AND t.status='review'", (agent,)).fetchone())
+                due = due or bool(db.execute("SELECT 1 FROM missions m WHERE supervisor=? AND status='active' AND NOT EXISTS (SELECT 1 FROM tasks WHERE mission=m.id AND status!='accepted')", (agent,)).fetchone())
             else:
                 due = bool(db.execute("SELECT 1 FROM missions WHERE orchestrator=? AND status='review'", (agent,)).fetchone())
+                due = due or bool(db.execute("SELECT 1 FROM tasks t JOIN missions m ON m.id=t.mission WHERE m.supervisor=? AND t.status='review'", (agent,)).fetchone())
+                due = due or bool(db.execute("SELECT 1 FROM missions m WHERE supervisor=? AND status='active' AND m.supervisor=m.orchestrator AND NOT EXISTS (SELECT 1 FROM tasks WHERE mission=m.id AND status!='accepted')", (agent,)).fetchone())
         return {"needed": bool(messages or due), "message": "Your team has pending mail or actionable work. Run `ao team inbox` and `ao team status`, handle the work, and acknowledge handled messages. Follow your role and memory protocol."}
 
     def memory_pending(self, actor):
