@@ -14,7 +14,7 @@ import (
 
 type TeamService interface {
 	Execute(context.Context, domain.ProjectID, teamsvc.Request) (json.RawMessage, error)
-	Hook(context.Context, domain.SessionID, string) (json.RawMessage, error)
+	Hook(context.Context, domain.SessionID, string, string) (json.RawMessage, error)
 }
 
 type TeamProjectParam struct {
@@ -30,6 +30,9 @@ type TeamRequest struct {
 }
 type TeamHookRequest struct {
 	Event string `json:"event"`
+	// LaunchID is the provider-process generation the callback belongs to
+	// (terminal launch id or chat host boot id). Empty predates fencing.
+	LaunchID string `json:"launchId,omitempty"`
 }
 type TeamResponse struct {
 	Result any `json:"result"`
@@ -103,7 +106,7 @@ func (c *TeamController) hook(w http.ResponseWriter, r *http.Request) {
 		envelope.WriteAPIError(w, r, 400, "validation", "TEAM_EVENT_INVALID", "Unknown team hook event", nil)
 		return
 	}
-	result, err := c.Svc.Hook(r.Context(), domain.SessionID(chi.URLParam(r, "id")), request.Event)
+	result, err := c.Svc.Hook(r.Context(), domain.SessionID(chi.URLParam(r, "id")), request.Event, request.LaunchID)
 	if err != nil {
 		envelope.WriteErrorWithCode(w, r, err, "TEAM_HOOK_FAILED", "Team mailbox hook failed")
 		return

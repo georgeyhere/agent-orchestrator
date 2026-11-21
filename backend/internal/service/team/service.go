@@ -24,6 +24,10 @@ import (
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 	projectsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/project"
 	sessionsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/session"
+	// persistenthost owns the chat host descriptor the team-hook fence reads.
+	// The import is that single record read; all provider control stays behind
+	// the NativeSessions seam.
+	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 )
 
 //go:embed python/aoteam/*.py python/aoteam/protocol.md
@@ -293,7 +297,7 @@ func (s *Service) Instructions(ctx context.Context, project domain.ProjectID, se
 	return response.Text, err
 }
 
-func (s *Service) Hook(ctx context.Context, session domain.SessionID, event string) (json.RawMessage, error) {
+func (s *Service) Hook(ctx context.Context, session domain.SessionID, event string, launchID string) (json.RawMessage, error) {
 	record, err := s.sessions.GetRecord(ctx, session)
 	if err != nil {
 		return nil, err
@@ -305,7 +309,38 @@ func (s *Service) Hook(ctx context.Context, session domain.SessionID, event stri
 	if err != nil || agent == "" {
 		return json.RawMessage(`{}`), err
 	}
+	if !s.hookLaunchAllowed(session, record, strings.TrimSpace(launchID)) {
+		s.log.Debug("dropping stale team hook", "session", session, "agent", agent, "event", event)
+		return json.RawMessage(`{}`), nil
+	}
 	return s.call(ctx, record.ProjectID, string(session), "hook", map[string]any{"event": event})
+}
+
+// hookLaunchAllowed fences a mailbox callback to the live provider generation,
+// mirroring the lifecycle's launch-generation boundary: terminal runtimes
+// compare against the session's committed launch id, chat providers against
+// the boot recorded in their host descriptor (controller generations rotate
+// across reconnects that reuse the provider process, so they cannot fence
+// hooks). A callback naming any other generation is dropped before it can
+// read mail or mark it delivered. Empty identities predate fencing — old
+// installs, providers that sanitize hook env — and an empty expectation means
+// the record predates its first launch; both stay accepted.
+func (s *Service) hookLaunchAllowed(session domain.SessionID, record domain.SessionRecord, launchID string) bool {
+	if launchID == "" {
+		return true
+	}
+	var expected string
+	if domain.NormalizeSessionMode(record.Mode) == domain.SessionModeChat {
+		boot, err := persistenthost.ReadBootID(s.dataDir, string(session))
+		if err != nil {
+			s.log.Debug("team hook boot lookup failed; accepting", "session", session, "error", err)
+			return true
+		}
+		expected = boot
+	} else {
+		expected = strings.TrimSpace(record.Metadata.RuntimeLaunchID)
+	}
+	return expected == "" || expected == launchID
 }
 
 type nativeAgent struct {

@@ -9,15 +9,26 @@ Chiefs use AO's native worker runtime. Their team tier defines their authority i
 the workflow. Each project team has one orchestrator, optionally one planner, and
 any number of chiefs and workers. Custom roles have a fixed tier and their own
 standing instructions.
-Team providers are Codex (Terminal UI and Chat) and Muse Code (Terminal UI).
-Both receive the team mailbox hooks and llmwiki/datashard instructions. On Windows,
-Muse is discovered on PATH or at `%LOCALAPPDATA%\Programs\muse\muse.cmd`.
+Team providers are Codex (Terminal UI and Chat), Muse Code (Terminal UI), and
+Claude Code (Terminal UI and Chat). All receive the team mailbox hooks and
+llmwiki/datashard instructions. On Windows, Muse is discovered on PATH or at
+`%LOCALAPPDATA%\Programs\muse\muse.cmd`. Claude Code is discovered on PATH, at
+its native install location, or via npm/Homebrew, and authenticates with a
+Claude login (subscription, API key, or Bedrock/Vertex). Claude Chat runs the
+`claude-agent-acp` adapter under AO-packaged Node and requires the native
+`claude.exe` on Windows (npm `.cmd` shims are rejected); headless installs can
+point `AO_CLAUDE_ACP_COMMAND`/`AO_ACP_RUNTIME_DIR` at a runtime. For unattended
+Claude agents (fixtures, labs), use `accept-edits` permissions plus a settings
+`permissions.allow` list for the shell commands the agent needs: `ao team` CLI
+calls otherwise stall on approval dialogs, and `bypass-permissions` hangs
+Claude TUI startup instead of skipping it (observed with Claude 2.1.330).
 
 ## Run the desktop app
 
-Use Python 3.11+, Git, Node 24+, Go 1.27.4+, an authenticated Codex CLI, and llmwiki
-installed in the selected Python environment. An adjacent `llmwiki/src` checkout
-can also supply the engine through `AO_LLMWIKI_SOURCE`.
+Use Python 3.11+, Git, Node 24+, Go 1.27.4+, authenticated Codex and Claude Code
+CLIs where those providers are used, and llmwiki installed in the selected
+Python environment. An adjacent `llmwiki/src` checkout can also supply the
+engine through `AO_LLMWIKI_SOURCE`.
 
 Install dependencies from the repository root.
 
@@ -95,7 +106,7 @@ For example, to configure this Windows user's existing datashard:
 3. Enable its team. This validates llmwiki and creates a stable `.llmwiki.json`
    binding if the project needs one. Existing namespaces are preserved.
 4. Spawn an orchestrator, then chiefs under it and workers under their chiefs.
-   Choose a role and provider: Codex Terminal UI/Chat or Muse Terminal UI.
+   Choose a role and provider: Codex Terminal UI/Chat, Muse Terminal UI, or Claude Code Terminal UI/Chat.
 5. Use Create planner to add a project planner, normally in Chat mode. Open its
    conversation through Work with planner. Request mission planning with a draft
    ID and goal, then refine the brief, acceptance criteria, constraints, and plan
@@ -196,7 +207,7 @@ Each argument file is one JSON object. These are the operation arguments.
 | --- | --- |
 | `enable` | Optional `memory_root` |
 | `role-add` | `role`, `tier`, `instructions` |
-| `agent-add` | `agent`, `role`, optional `parent`, `provider` (`codex`), `mode` (`tui` or `chat`) |
+| `agent-add` | `agent`, `role`, optional `parent`, `provider` (`codex`, `muse`, or `claude-code`), `mode` (`tui` or `chat`; `muse` only supports `tui`) |
 | `agent-control` | `agent`, `action` (`pause`, `resume`, `cancel`) |
 | `mission-create` | `mission`, `chief`, `objective`, `criteria` |
 | `draft-create` | `draft`, `objective`, optional `criteria`, `plan`, `chief` |
@@ -231,9 +242,12 @@ session mappings, missions, tasks, messages, receipts, operation journals, and
 audit events are transactional local records. Mail send retries can use stable
 deduplication keys. Workflow changes and their notifications commit together.
 
-Codex SessionStart, UserPromptSubmit, PostToolUse, and Stop hooks surface mail.
-Chat launches inspect Codex's hook fingerprints and trust only the four exact
-mailbox commands in that thread's config. User hook settings remain untouched.
+SessionStart, UserPromptSubmit, PostToolUse, and Stop mailbox hooks surface mail
+on every managed provider: Codex carries them as session flags (Chat launches
+also inspect the thread's hook list and trust only the four exact mailbox
+commands), Muse loads them from a managed hooks file, and Claude Code installs
+them into the worktree `.claude/settings.local.json` for both Terminal UI and
+Chat (SDK sessions execute settings hooks). User hook settings remain untouched.
 An explicit recipient acknowledgement records handled or durably delegated mail.
 Reading an inbox records delivery. A Stop hook continues a turn while mail or
 tracked datashard edits remain pending. The daemon also wakes idle sessions from
@@ -305,6 +319,9 @@ python -B -m unittest discover -s backend/internal/service/team/python -p test_t
 cd backend
 go test ./internal/service/team ./internal/httpd/controllers -run 'TestTeam|TestEmbedded'
 go test ./internal/adapters/chatdriver/codexappserver -run TestAppServerTeam
+go test ./internal/adapters/agent/muse ./internal/adapters/agent/claudecode
+go test ./internal/session_manager -run 'TestChatSpawnInstallsClaudeTeamHooks|TestChatSpawnInstallsNoTeamHooks|TestTeamEnvironment'
+AO_LIVE_CLAUDE_ACP=1 go test ./internal/adapters/chatdriver/claudeacp -run 'TestLiveClaudeChat'
 ```
 
 Run frontend typechecking and the TeamView tests through the existing frontend

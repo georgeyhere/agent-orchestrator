@@ -13,10 +13,11 @@ import (
 )
 
 type teamFixture struct {
-	project domain.ProjectID
-	request teamsvc.Request
-	session domain.SessionID
-	event   string
+	project  domain.ProjectID
+	request  teamsvc.Request
+	session  domain.SessionID
+	event    string
+	launchID string
 }
 
 func (f *teamFixture) Execute(_ context.Context, project domain.ProjectID, request teamsvc.Request) (json.RawMessage, error) {
@@ -24,9 +25,10 @@ func (f *teamFixture) Execute(_ context.Context, project domain.ProjectID, reque
 	f.request = request
 	return json.RawMessage(`{"enabled":true}`), nil
 }
-func (f *teamFixture) Hook(_ context.Context, session domain.SessionID, event string) (json.RawMessage, error) {
+func (f *teamFixture) Hook(_ context.Context, session domain.SessionID, event string, launchID string) (json.RawMessage, error) {
 	f.session = session
 	f.event = event
+	f.launchID = launchID
 	return json.RawMessage(`{"decision":"block","reason":"Pending mail"}`), nil
 }
 
@@ -45,6 +47,25 @@ func TestTeamControllerPreservesSessionIdentityAndHookOutput(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != 200 || fixture.session != "worker-1" || fixture.event != "Stop" || !strings.Contains(response.Body.String(), `"decision":"block"`) {
 		t.Fatalf("hook output lost: %s", response.Body.String())
+	}
+}
+
+func TestTeamControllerForwardsHookLaunchIdentity(t *testing.T) {
+	fixture := &teamFixture{}
+	router := chi.NewRouter()
+	(&TeamController{Svc: fixture}).Register(router)
+	request := httptest.NewRequest("POST", "/sessions/worker-1/team-hook", strings.NewReader(`{"event":"Stop","launchId":"launch-9"}`))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != 200 || fixture.launchID != "launch-9" {
+		t.Fatalf("launch identity lost: %d %q", response.Code, fixture.launchID)
+	}
+	// Callbacks that predate fencing omit the field; they still route.
+	request = httptest.NewRequest("POST", "/sessions/worker-1/team-hook", strings.NewReader(`{"event":"Stop"}`))
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != 200 || fixture.launchID != "" {
+		t.Fatalf("legacy hook rejected: %d %q", response.Code, response.Body.String())
 	}
 }
 

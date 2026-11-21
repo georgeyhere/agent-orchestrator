@@ -143,8 +143,8 @@ class Team:
         return {"managed": True, "agent": row[0]}
 
     def add_agent(self, actor, agent, role, parent=None, provider="codex", mode="tui"):
-        if provider not in {"codex", "muse"}:
-            raise ContractError("Agent provider must be codex or muse")
+        if provider not in {"codex", "muse", "claude-code"}:
+            raise ContractError("Agent provider must be codex, muse or claude-code")
         if provider == "muse" and mode != "tui":
             raise ContractError("Muse team agents use the terminal interface (tui)")
         if mode not in {"tui", "chat"}:

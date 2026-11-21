@@ -9,9 +9,13 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
 )
 
 func TestMain(m *testing.M) {
@@ -421,6 +425,67 @@ func TestConnectOrStartLaunchesDetachedHost(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("detached host did not remove its descriptor after shutdown")
+}
+
+func TestHostRecordsProviderBootID(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := Config{SessionID: "boot", DataDir: dataDir, Workdir: t.TempDir(),
+		Env:  append(os.Environ(), "AO_CHAT_HOST_PROVIDER_HELPER=1"),
+		Argv: []string{os.Args[0], "-test.run=TestProviderHelper"}}
+	done := make(chan error, 1)
+	go func() { done <- Run(context.Background(), cfg) }()
+	t.Cleanup(func() { _ = Shutdown(context.Background(), dataDir, cfg.SessionID) })
+	d := awaitDescriptor(t, dataDir, cfg.SessionID)
+	if d.BootID == "" {
+		t.Fatal("fresh provider boot recorded no identity")
+	}
+	if got, err := ReadBootID(dataDir, cfg.SessionID); err != nil || got != d.BootID {
+		t.Fatalf("ReadBootID = %q, %v; want descriptor boot", got, err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("host exited early: %v", err)
+	default:
+	}
+}
+
+func TestWithProviderBootIDReplacesExisting(t *testing.T) {
+	out := withProviderBootID([]string{"A=1", "AO_RUNTIME_LAUNCH_ID=old"}, "new")
+	seen := 0
+	for _, kv := range out {
+		if strings.HasPrefix(kv, providerBootEnv+"=") {
+			seen++
+			if kv != providerBootEnv+"=new" {
+				t.Fatalf("boot entry = %q", kv)
+			}
+		}
+	}
+	if seen != 1 || len(out) != 2 || out[0] != "A=1" {
+		t.Fatalf("env rewrite = %q", out)
+	}
+}
+
+func TestReadBootIDMissingOrMalformed(t *testing.T) {
+	if got, err := ReadBootID(t.TempDir(), "absent"); err != nil || got != "" {
+		t.Fatalf("missing descriptor = %q, %v; want empty", got, err)
+	}
+	dataDir := t.TempDir()
+	dir := filepath.Join(dataDir, "chat-hosts", "broken")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "host.json"), []byte("{oops"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := ReadBootID(dataDir, "broken"); err == nil || got != "" {
+		t.Fatalf("malformed descriptor = %q, %v; want error", got, err)
+	}
+}
+
+func TestProviderBootEnvMatchesSessionManager(t *testing.T) {
+	if providerBootEnv != sessionmanager.EnvRuntimeLaunchID {
+		t.Fatalf("hook env %q diverged from session manager %q", providerBootEnv, sessionmanager.EnvRuntimeLaunchID)
+	}
 }
 
 func TestHostReplaysUnansweredServerRequestAfterDetach(t *testing.T) {
