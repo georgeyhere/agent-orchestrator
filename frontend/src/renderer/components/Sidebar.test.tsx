@@ -4972,3 +4972,174 @@ describe("Memoized Sidebar with unchanged props", () => {
 		});
 	});
 });
+
+describe("sidebar team hierarchy", () => {
+	const teamAgent = (id: string, tier: string, parent: string | null, sessionId: string | null) => ({
+		id, tier, role: tier, parent, provider: "codex", enabled: 1, session_id: sessionId, launch_error: null, revision: 1,
+	});
+	const teamState = {
+		enabled: true, roles: [], missions: [], drafts: [], tasks: [], messages: [], pending: {},
+		agents: [
+			teamAgent("orch", "orchestrator", null, "p1-orch"),
+			teamAgent("plan", "planner", null, "p1-plan"),
+			teamAgent("chief-a", "chief", "orch", "p1-chief-a"),
+			teamAgent("chief-b", "chief", "orch", "p1-chief-b"),
+			teamAgent("wd", "worker", "orch", "p1-wd"),
+			teamAgent("wa1", "worker", "chief-a", "p1-wa1"),
+			teamAgent("wa2", "worker", "chief-a", "p1-wa2"),
+			teamAgent("wb1", "worker", "chief-b", "p1-wb1"),
+			teamAgent("lost", "worker", "chief-gone", "p1-lost"),
+		],
+	};
+	const tSession = (id: string, title: string, stamp: string, extra: Partial<WorkspaceSession> = {}): WorkspaceSession => ({
+		...session, id, workspaceId: "proj-1", workspaceName: "Project One", title, lastInteractionAt: `2026-06-30T00:00:${stamp}Z`, ...extra,
+	});
+	const teamWorkspace: WorkspaceSummary = {
+		...workspace,
+		sessions: [
+			tSession("p1-orch", "team orch", "05", { kind: "orchestrator", status: "exited", activity: { state: "exited", lastActivityAt: "2026-06-30T00:00:05Z" } }),
+			tSession("p1-plan", "team plan", "04"),
+			tSession("p1-chief-a", "chief alpha", "08"),
+			tSession("p1-wa1", "alpha one", "06"),
+			tSession("p1-wa2", "alpha two", "02"),
+			tSession("p1-chief-b", "chief beta", "03"),
+			tSession("p1-wb1", "beta one", "09"),
+			tSession("p1-wd", "direct ray", "01"),
+			tSession("p1-lost", "lost worker", "00"),
+			tSession("p1-plain", "plain task", "07"),
+		],
+	};
+	function mockTeamState() {
+		const fallback = getMock.getMockImplementation();
+		getMock.mockImplementation((path: string, options?: unknown) =>
+			path === "/api/v1/projects/{projectId}/team"
+				? Promise.resolve({ data: { result: teamState }, error: undefined })
+				: fallback?.(path, options),
+		);
+	}
+	function listedTitles(list: HTMLElement) {
+		return within(list).getAllByRole("button", { name: /^Open / }).map((button) => button.getAttribute("aria-label"));
+	}
+	function rowWrapper(title: string) {
+		return screen.getByLabelText(`Open ${title}`).closest("[data-density]") as HTMLElement;
+	}
+
+	it("groups sessions by reporting line with tier densities and crew indents", async () => {
+		mockTeamState();
+		renderSidebar({ workspaces: [teamWorkspace] });
+		const list = await screen.findByTestId("session-list-proj-1");
+		await screen.findByLabelText("Open team orch");
+		fireEvent.click(screen.getByRole("button", { name: "Show 4 more agents" }));
+		await waitFor(() => expect(listedTitles(list)).toHaveLength(10));
+		expect(listedTitles(list)).toEqual([
+			"Open team orch", "Open team plan", "Open direct ray",
+			"Open chief alpha", "Open alpha one", "Open alpha two",
+			"Open chief beta", "Open beta one", "Open lost worker", "Open plain task",
+		]);
+		expect(rowWrapper("team orch")).toHaveAttribute("data-density", "standard");
+		expect(rowWrapper("team plan")).toHaveAttribute("data-density", "standard");
+		expect(rowWrapper("chief alpha")).toHaveAttribute("data-density", "chief");
+		expect(rowWrapper("alpha one")).toHaveAttribute("data-density", "worker");
+		expect(rowWrapper("direct ray")).toHaveAttribute("data-depth", "1");
+		expect(rowWrapper("direct ray")).toHaveClass("pl-3");
+		expect(rowWrapper("alpha one")).toHaveAttribute("data-depth", "2");
+		expect(rowWrapper("alpha one")).toHaveClass("pl-6");
+		expect(rowWrapper("lost worker")).toHaveAttribute("data-depth", "0");
+		expect(rowWrapper("chief alpha").querySelector("[data-session-row]")).toHaveClass("h-7");
+		expect(rowWrapper("alpha one").querySelector("[data-session-row]")).toHaveClass("h-6");
+		expect(rowWrapper("team orch").querySelector("[data-session-row]")).toHaveClass("h-8");
+	});
+
+	it("lists a stopped orchestrator once and opens its session", async () => {
+		mockTeamState();
+		renderSidebar({ workspaces: [{ ...teamWorkspace, sessions: teamWorkspace.sessions.filter((item) => item.id === "p1-orch") }] });
+		const rows = await screen.findAllByLabelText("Open team orch");
+		expect(rows).toHaveLength(1);
+		fireEvent.click(rows[0]);
+		await waitFor(() =>
+			expect(navigateMock).toHaveBeenCalledWith({
+				to: "/projects/$projectId/sessions/$sessionId",
+				params: { projectId: "proj-1", sessionId: "p1-orch" },
+			}),
+		);
+	});
+
+	it("falls back to the existing order without team metadata", async () => {
+		renderSidebar({ workspaces: [teamWorkspace] });
+		const list = await screen.findByTestId("session-list-proj-1");
+		fireEvent.click(screen.getByRole("button", { name: "Show 3 more agents" }));
+		await waitFor(() => expect(listedTitles(list)).toHaveLength(9));
+		expect(listedTitles(list)).toEqual([
+			"Open beta one", "Open chief alpha", "Open plain task", "Open alpha one", "Open team plan",
+			"Open chief beta", "Open alpha two", "Open direct ray", "Open lost worker",
+		]);
+		expect(screen.queryByLabelText("Open team orch")).not.toBeInTheDocument();
+		expect(rowWrapper("chief alpha")).toHaveAttribute("data-density", "standard");
+	});
+
+	it("keeps an attention crew with its chief", async () => {
+		mockTeamState();
+		renderSidebar({
+			workspaces: [{
+				...workspace,
+				sessions: [
+					tSession("p1-chief-a", "chief alpha", "01"),
+					tSession("p1-wa1", "alpha one", "02", { status: "ci_failed" }),
+					tSession("p1-plain", "plain task", "00"),
+				],
+			}],
+		});
+		const list = await screen.findByTestId("session-list-proj-1");
+		await waitFor(() => expect(listedTitles(list)).toEqual(["Open chief alpha", "Open alpha one", "Open plain task"]));
+	});
+
+	it("lists a worker with a terminated supervisor at top level", async () => {
+		mockTeamState();
+		renderSidebar({
+			workspaces: [{
+				...workspace,
+				sessions: [
+					tSession("p1-chief-a", "chief alpha", "02"),
+					tSession("p1-wa1", "alpha one", "01"),
+					{ ...tSession("p1-chief-b", "chief beta", "03"), isTerminated: true },
+					tSession("p1-wb1", "beta one", "00"),
+				],
+			}],
+		});
+		const list = await screen.findByTestId("session-list-proj-1");
+		await waitFor(() => expect(listedTitles(list)).toEqual(["Open chief alpha", "Open alpha one", "Open beta one"]));
+		expect(rowWrapper("beta one")).toHaveAttribute("data-depth", "0");
+		expect(rowWrapper("beta one")).toHaveAttribute("data-density", "worker");
+	});
+
+	it("publishes the visual order for keyboard navigation", async () => {
+		mockTeamState();
+		renderSidebar({ workspaces: [teamWorkspace] });
+		const list = await screen.findByTestId("session-list-proj-1");
+		await screen.findByLabelText("Open team orch");
+		fireEvent.click(screen.getByRole("button", { name: "Show 4 more agents" }));
+		await waitFor(() => expect(listedTitles(list)).toHaveLength(10));
+		await waitFor(() =>
+			expect(useSidebarOrderStore.getState().sessionOrders["proj-1"]).toEqual([
+				"p1-orch", "p1-plan", "p1-wd", "p1-chief-a", "p1-wa1", "p1-wa2", "p1-chief-b", "p1-wb1", "p1-lost", "p1-plain",
+			]),
+		);
+	});
+
+	it("applies team densities to pinned rows", async () => {
+		mockTeamState();
+		renderSidebar({
+			workspaces: [{
+				...workspace,
+				sessions: [
+					{ ...tSession("p1-chief-a", "chief alpha", "01"), isPinned: true, pinnedAt: "2026-06-30T01:00:00Z" },
+					tSession("p1-plain", "plain task", "00"),
+				],
+			}],
+		});
+		const pinned = await screen.findByTestId("pinned-session-list");
+		await waitFor(() =>
+			expect(within(pinned).getByLabelText("Open chief alpha").closest("[data-density]")).toHaveAttribute("data-density", "chief"),
+		);
+	});
+});
