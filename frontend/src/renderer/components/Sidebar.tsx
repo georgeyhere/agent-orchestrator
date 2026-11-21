@@ -155,7 +155,9 @@ import { useSidebarOrderStore } from "../stores/sidebar-order-store";
 import { useSessionImportStore } from "../stores/session-import-store";
 import { sessionReadKey, useSessionReadStore, useSessionUnread } from "../stores/session-read-store";
 import { useOrchestratorReplyState } from "../stores/orchestrator-reply-store";
-import { applyOrder, pinnedFirst } from "../lib/sidebar-order";
+import { applyOrder, applyTeamHierarchy, buildTeamSessionMeta, densityForTier, pinnedFirst, teamOrchestratorSessionId, type TeamRowDensity, type TeamRowMeta } from "../lib/sidebar-order";
+import { useSidebarTeams } from "../hooks/useSidebarTeams";
+import type { TeamState } from "./TeamView";
 import { useKeybindingsStore } from "../stores/keybindings-store";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { SessionArchiveDialog, type SessionArchiveChoice } from "./SessionArchiveDialog";
@@ -924,6 +926,22 @@ export const Sidebar = memo(function Sidebar({
 		const scratchpads = new Set(ownScratchpadWorkspaces(orderedWorkspaces));
 		return orderedWorkspaces.filter((workspace) => !scratchpads.has(workspace));
 	}, [orderedWorkspaces]);
+	// Team states drive the reporting-line hierarchy. Projects without one keep
+	// the existing ordering, densities, and rows.
+	const sidebarTeamIds = useMemo(
+		() => projectWorkspaces.filter((workspace) => workspace.kind !== CLOUD_PROJECT_KIND && workspace.id !== STANDALONE_WORKSPACE_ID).map((workspace) => workspace.id),
+		[projectWorkspaces],
+	);
+	const sidebarTeams = useSidebarTeams(sidebarTeamIds);
+	const teamTierBySession = useMemo(() => {
+		const tiers = new Map<string, string>();
+		for (const [projectId, team] of sidebarTeams) {
+			for (const agent of team.agents) {
+				if (agent.session_id) tiers.set(`${projectId}:${agent.session_id}`, agent.tier);
+			}
+		}
+		return tiers;
+	}, [sidebarTeams]);
 	const standaloneWorkspace = useMemo((): WorkspaceSummary => {
 		const scratchpads = ownScratchpadWorkspaces(workspaces);
 		const local = scratchpads.find((workspace) => workspace.kind === STANDALONE_PROJECT_KIND);
@@ -1209,6 +1227,7 @@ export const Sidebar = memo(function Sidebar({
 									<PinnedSessionRow
 										key={sessionUiKey(session.id, session.hostId)}
 										session={session}
+										density={densityForTier(session.hostId ? undefined : teamTierBySession.get(`${session.workspaceId}:${session.id}`))}
 										active={session.hostId
 											? selection.activeRemoteHostId === session.hostId && selection.activeRemoteSessionId === session.id
 											: selection.activeSessionId === session.id}
@@ -1280,6 +1299,7 @@ export const Sidebar = memo(function Sidebar({
 												<ProjectItem
 													key={workspace.id}
 													workspace={workspace}
+													team={sidebarTeams.get(workspace.id)}
 													avatarUrl={projectAvatars.get(workspace.id)}
 													expanded={expandedIds.has(workspace.id) || (initialActiveSessionProjectId === workspace.id && !dismissedInitialActiveProjectIds.has(workspace.id))}
 													suppressInitialExpandAnimation={expandedIds.has(workspace.id)}
@@ -1498,6 +1518,8 @@ type Selection = ReturnType<typeof useSelection>;
 
 type ProjectItemProps = {
 	workspace: WorkspaceSummary;
+	/** Enabled team state for the reporting-line hierarchy. Absent without a team. */
+	team?: TeamState;
 	/** The repository owner's avatar, shown in place of the folder icon. */
 	avatarUrl?: string;
 	hostLabel?: string;
@@ -1547,6 +1569,7 @@ function LazyMenuEntries({ build }: { build: () => MenuEntry[] }) {
 
 const ProjectItem = memo(function ProjectItem({
 	workspace,
+	team,
 	avatarUrl,
 	hostLabel,
 	onOpenOrchestrator,
@@ -1605,21 +1628,35 @@ const ProjectItem = memo(function ProjectItem({
 	// A project shared from another organization lists every session shared
 	// with this person, its orchestrator included: a guest has no orchestrator
 	// of their own to reach it through.
-	const visibleSessions = useMemo(
-		() => (workspace.shared
+	const teamMeta = useMemo(() => (team ? buildTeamSessionMeta(team.agents) : undefined), [team]);
+	const visibleSessions = useMemo(() => {
+		const base = (workspace.shared
 			? [...workspace.sessions].sort((a, b) => Number(isOrchestratorSession(b)) - Number(isOrchestratorSession(a)))
 			: sortedWorkerSessions(workspace.sessions)
-		).filter((session) => session.isTerminated !== true),
-		[workspace.sessions, workspace.shared],
-	);
+		).filter((session) => session.isTerminated !== true);
+		// A team project lists its current orchestrator once, even with a
+		// stopped agent: the row reuses the ordinary session affordances.
+		if (teamMeta) {
+			const orchId = teamOrchestratorSessionId(teamMeta);
+			if (orchId && !base.some((session) => session.id === orchId)) {
+				const orch = workspace.sessions.find((session) => session.id === orchId);
+				if (orch && orch.isTerminated !== true) base.unshift(orch);
+			}
+		}
+		return base;
+	}, [workspace.sessions, workspace.shared, teamMeta]);
 	const projectNeedsInput = useMemo(() => visibleSessions.some(sessionNeedsInput), [visibleSessions]);
 	const [sessionOrder, setSessionOrder] = useState<string[]>([]);
-	const sessions = useMemo(
+	const orderedSessions = useMemo(
 		() => {
 			const ordered = applyOrder(visibleSessions, (session) => session.id, sessionOrder, "start");
 			return floatAttention(ordered, sessionOrder.length > 0);
 		},
 		[sessionOrder, visibleSessions],
+	);
+	const { sessions, rowMeta } = useMemo<{ sessions: WorkspaceSession[]; rowMeta: Map<string, TeamRowMeta> | undefined }>(
+		() => (teamMeta ? applyTeamHierarchy(orderedSessions, teamMeta) : { sessions: orderedSessions, rowMeta: undefined }),
+		[orderedSessions, teamMeta],
 	);
 	// Publish the order shown here so keyboard navigation follows it.
 	useEffect(() => {
@@ -2235,6 +2272,7 @@ const ProjectItem = memo(function ProjectItem({
 												)}
 												sessions={listedSessions}
 												sessionIds={listedSessionIds}
+												rowMeta={rowMeta}
 												activeSessionId={selection.activeSessionId}
 												plain={projectDragInProgress}
 												onReorder={commitSessionOrder}
@@ -2512,18 +2550,20 @@ function ScratchpadSection({
 const PinnedSessionRow = memo(function PinnedSessionRow({
 	session,
 	active,
+	density,
 	hostLabel,
 	onKilled,
 	onOpenSession,
 }: {
 	session: WorkspaceSession;
 	active: boolean;
+	density?: TeamRowDensity;
 	hostLabel?: string;
 	onKilled?: (session: WorkspaceSession) => void;
 	onOpenSession: (session: WorkspaceSession) => void;
 }) {
 	const onOpen = useCallback(() => onOpenSession(session), [onOpenSession, session]);
-	return <SessionRow session={session} active={active} hostLabel={hostLabel} indented={false} onKilled={onKilled} onOpen={onOpen} />;
+	return <SessionRow session={session} active={active} density={density} hostLabel={hostLabel} indented={false} onKilled={onKilled} onOpen={onOpen} />;
 });
 
 // A session row inside its project's drag context. The Pinned section renders
@@ -2532,6 +2572,8 @@ const SortableSessionRow = memo(function SortableSessionRow({
 	session,
 	active,
 	consumeDragClick,
+	depth,
+	density,
 	indented = true,
 	layoutDependency,
 	listIsDragging,
@@ -2544,6 +2586,8 @@ const SortableSessionRow = memo(function SortableSessionRow({
 	active: boolean;
 	consumeDragClick: (id: string) => boolean;
 	cloud?: boolean;
+	depth?: 0 | 1 | 2;
+	density?: TeamRowDensity;
 	indented?: boolean;
 	layoutDependency?: string;
 	listIsDragging: boolean;
@@ -2568,6 +2612,8 @@ const SortableSessionRow = memo(function SortableSessionRow({
 			session={session}
 			active={active}
 			cloud={cloud}
+			depth={depth}
+			density={density}
 			indented={indented}
 			onKilled={onKilled}
 			onOpen={open}
@@ -2587,6 +2633,7 @@ function SessionReorderList({
 	className,
 	sessions,
 	sessionIds,
+	rowMeta,
 	activeSessionId,
 	indented = true,
 	plain = false,
@@ -2600,6 +2647,8 @@ function SessionReorderList({
 	className: string;
 	sessions: WorkspaceSession[];
 	sessionIds: string[];
+	/** Reporting-line density/depth per session. Absent without team metadata. */
+	rowMeta?: ReadonlyMap<string, TeamRowMeta>;
 	activeSessionId?: string;
 	indented?: boolean;
 	/** Badge Cloud sessions, in a list (the Scratchpad) that mixes them with local ones. */
@@ -2662,6 +2711,8 @@ function SessionReorderList({
 						session={session}
 						active={activeSessionId === session.id}
 						cloud={cloudBadge && Boolean(session.cloud)}
+						depth={rowMeta?.get(session.id)?.depth}
+						density={rowMeta?.get(session.id)?.density}
 						indented={indented}
 						onKilled={onKilled}
 						onOpen={() => onOpen(session.id)}
@@ -2690,6 +2741,8 @@ function SessionReorderList({
 							active={activeSessionId === session.id}
 							consumeDragClick={dragClickGuard.consumeClick}
 							cloud={cloudBadge && Boolean(session.cloud)}
+							depth={rowMeta?.get(session.id)?.depth}
+							density={rowMeta?.get(session.id)?.density}
 							indented={indented}
 							layoutDependency={layoutDependency}
 							listIsDragging={listDragging}
@@ -2714,6 +2767,8 @@ type SessionReorder = Pick<SortableRow, "isDragging" | "listeners" | "setActivat
 const SessionRow = memo(function SessionRow({
 	session,
 	active,
+	depth,
+	density,
 	hostLabel,
 	cloud = false,
 	indented = true,
@@ -2725,6 +2780,10 @@ const SessionRow = memo(function SessionRow({
 }: {
 	session: WorkspaceSession;
 	active: boolean;
+	/** Reporting-line depth: crews under the orchestrator sit at 1, chief crews at 2. */
+	depth?: 0 | 1 | 2;
+	/** Row density for the team role tier. Standard keeps the current height. */
+	density?: TeamRowDensity;
 	hostLabel?: string;
 	/** Mark the row as a Cloud session, in a list (the Scratchpad) that mixes them with local ones. */
 	cloud?: boolean;
@@ -2746,6 +2805,10 @@ const SessionRow = memo(function SessionRow({
 	// the shimmer.
 	const indicator = getSessionRowIndicator(session);
 	const working = indicator === "working";
+	// Team reporting-line presentation. Heights shrink by tier while type and
+	// affordances stay put; crew rows indent by reporting depth.
+	const rowHeight = density === "chief" ? "h-7" : density === "worker" ? "h-6" : "h-8";
+	const depthIndent = depth === 1 ? "pl-3" : depth === 2 ? "pl-6" : indented ? "pl-0.5" : undefined;
 	// Having the session open reads it, including anything that lands while it is open.
 	const markRead = useSessionReadStore((state) => state.markRead);
 	useEffect(() => {
@@ -2814,10 +2877,10 @@ const SessionRow = memo(function SessionRow({
 
 	if (rename.isEditing) {
 		return (
-			<SidebarMenuSubItem className={cn(indented && "pl-0.5")}>
+			<SidebarMenuSubItem className={cn(depthIndent)} data-density={density ?? "standard"} data-depth={depth ?? 0}>
 				<div
 					className={cn(
-						"group/nav-row relative flex h-8 w-full items-center gap-1.5 rounded-lg py-0 pl-1.5 pr-1",
+						`group/nav-row relative flex ${rowHeight} w-full items-center gap-1.5 rounded-lg py-0 pl-1.5 pr-1`,
 						active && "text-foreground",
 					)}
 					data-session-row=""
@@ -2861,7 +2924,9 @@ const SessionRow = memo(function SessionRow({
 			<ContextMenuTrigger asChild>
 				<HoverCardTrigger asChild>
 				<SidebarMenuSubItem
-					className={cn(indented && "pl-0.5", reorder?.isDragging && "z-chrome cursor-grabbing opacity-60")}
+					className={cn(depthIndent, reorder?.isDragging && "z-chrome cursor-grabbing opacity-60")}
+					data-density={density ?? "standard"}
+					data-depth={depth ?? 0}
 					data-dragging={reorder?.isDragging ? "true" : undefined}
 					ref={rowNodeRef}
 					style={reorder ? sortableRowStyle(reorder) : undefined}
@@ -2874,7 +2939,7 @@ const SessionRow = memo(function SessionRow({
 			>
 				<div
 					className={cn(
-						"group/session-row group/nav-row relative flex h-8 w-full items-center rounded-lg",
+						`group/session-row group/nav-row relative flex ${rowHeight} w-full items-center rounded-lg`,
 						"hover:text-foreground",
 						active && "text-foreground",
 					)}
@@ -2890,7 +2955,7 @@ const SessionRow = memo(function SessionRow({
 							aria-keyshortcuts="F2"
 							aria-label={t("shell.openSession", { title: [session.title, hostLabel, cloud ? t("shell.cloudProjectBadge") : undefined].filter(Boolean).join(" · ") })}
 							className={cn(
-								"flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-lg py-0 pl-1.5 text-left text-sm outline-hidden focus-visible:ring-2 focus-visible:ring-sidebar-ring",
+								`flex ${rowHeight} min-w-0 flex-1 items-center gap-1.5 rounded-lg py-0 pl-1.5 text-left text-sm outline-hidden focus-visible:ring-2 focus-visible:ring-sidebar-ring`,
 								(session.lastInteractionAt ?? session.lastUserMessageAt) ? "pr-[36px]" : "pr-2.5",
 								!reorder?.isDragging &&
 									"group-hover/session-row:pr-sidebar-project-actions group-has-[:focus-visible]/session-row:pr-sidebar-project-actions",
