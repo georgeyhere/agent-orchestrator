@@ -10,6 +10,7 @@ import sys
 import time
 from types import SimpleNamespace
 
+from .authority import PRINCIPAL, RESERVED_IDS, SYSTEM, authorize, is_principal, permissions_for, table as authority_table
 from .config import ContractError, configured_memory_root, identifier, text
 from .store import Store, now
 from .workflow import Workflow
@@ -65,9 +66,11 @@ class Team:
         return Wiki(workspace or self.project, memory_root)
 
     def enable(self, actor, memory_root=None):
-        if actor != "operator":
-            raise ContractError("Enable a project team from the human control surface")
+        if not is_principal(actor):
+            raise ContractError("Only the Principal can enable the project team")
         self.open()
+        with self.store.connect() as db:
+            decision = authorize(self.store, db, actor, "team.enable")
         if memory_root is not None:
             text(memory_root, "memory root", 4000)
             with self.store.connect(True) as db:
@@ -91,7 +94,7 @@ class Team:
         wiki = self.wiki()
         with self.store.connect(True) as db:
             db.execute("INSERT OR REPLACE INTO settings VALUES ('enabled','true')")
-            self.store.event(db, actor, "team.enabled", {"memory_project_id": wiki.project_id})
+            self.store.record(db, decision, "team.enabled", {"memory_project_id": wiki.project_id})
         return self.snapshot()
 
     def snapshot(self):
@@ -104,17 +107,26 @@ class Team:
         for agent in result["agents"]:
             agent.update(native.get(agent["id"], {}))
         result["enabled"] = bool(enabled and enabled[0] == "true")
+        with self.store.connect() as db:
+            result["principal"] = self.store.principal(db)
+        result["authority"] = authority_table()
         return result
 
     def actor(self):
         session = self.request.get("session_id")
         if not session:
-            return "operator"
+            # Callers without an agent session are the Principal's own
+            # control surfaces: the desktop GUI and a plain terminal.
+            return PRINCIPAL
         self.open()
         with self.store.connect() as db:
             row = db.execute("SELECT agent FROM native_agents WHERE session_id=?", (session,)).fetchone()
         if not row:
             raise ContractError("This AO session is not attached to a team agent")
+        if row[0] in RESERVED_IDS:
+            # Agents registered before these IDs were reserved must never
+            # gain the Principal's authority through their name.
+            raise ContractError(f"Team agent {row[0]} uses a reserved ID. Replace it with a new agent")
         return row[0]
 
     def attach(self, agent, session_id):
@@ -161,18 +173,19 @@ class Team:
                 raise ContractError("Each project team has one orchestrator")
             request_id = "team-" + hashlib.sha256((self.request["project_id"] + "/" + agent).encode()).hexdigest()
             db.execute("INSERT INTO native_agents(agent,request_id,mode) VALUES (?,?,?)", (agent, request_id, mode))
-            self.store._send(db, "operator", agent, "Team agent ready", "Read your role and team protocol. Check current missions and tasks, then wait for assignments.")
+            self.store._send(db, SYSTEM, agent, "Team agent ready", "Read your role and team protocol. Check current missions and tasks, then wait for assignments.")
         return {"id": agent, "launch": "queued"}
 
     def instructions(self, agent):
         with self.store.connect() as db:
             item = self.store.get(db, "agents", agent)
             role = self.store.get(db, "roles", item["role"])
+            principal = self.store.principal(db)
         wiki = self.wiki()
         policy = wiki.path("POLICY.md").read_text(encoding="utf-8")
         protocol = Path(__file__).with_name("protocol.md").read_text(encoding="utf-8")
-        return (f"\n## Project team role\nYour team identity is {agent}, tier {item['tier']}, role {item['role']}, supervisor {item['parent']}.\n"
-                + role["instructions"] + "\n" + protocol + "\n## Project memory policy\n" + policy
+        return (f"\n## Project team role\nYour team identity is {agent}, tier {item['tier']}, role {item['role']}, supervisor {item['parent']}. The Principal is {principal['name']}.\n"
+                + role["instructions"] + "\n" + permissions_for(item["tier"]) + protocol + "\n## Project memory policy\n" + policy
                 + "\nUse `ao team status` and `ao team inbox` to inspect actionable work. "
                 "Use `ao team act OPERATION --file arguments.json` for team actions. "
                 "The operations are role-add(role,tier,instructions), agent-add(agent,role,parent,provider,mode), "
@@ -184,8 +197,8 @@ class Team:
                 "draft-create(draft,objective,criteria,plan,supervisor,workers), draft-update(draft,revision,objective,criteria,plan,supervisor,workers), "
                 "mission-create(mission,supervisor,objective,criteria,plan,workers), mission-staff(mission,revision,workers), "
                 "agent-reparent(agent,parent,revision), mission-reassign(mission,revision,supervisor,move_workers). "
-                "Drafts stay separate from execution until the human operator uses draft-release(draft,revision). "
-                "The planner collaborates with the user on the brief and plan, and cannot launch execution or give final signoff. "
+                "Drafts stay separate from execution until the Principal uses draft-release(draft,revision). "
+                "The planner collaborates with the Principal on the brief and plan, and cannot launch execution or give final signoff. "
                 "Org chart changes preserve task ownership and notify affected agents. Read current supervisors from ao team status; they may change after launch. "
                 "Use task/mission for kind and real verification evidence. "
                 "Custom roles retain their fixed hierarchy tier. Mission approval belongs to its assigned orchestrator. "
@@ -224,8 +237,7 @@ class Team:
             subject = self.store.get(db, "missions", item["mission"]) if kind == "task" else item
             owner = item["worker"] if kind == "task" else subject["supervisor"]
             supervisor = subject["supervisor"] if kind == "task" else subject["orchestrator"]
-            if actor not in {owner, supervisor}:
-                raise ContractError("Only the assigned agent or its supervisor can change a blocker")
+            decision = authorize(self.store, db, actor, kind + ".block", mission=subject, **({"task": item} if kind == "task" else {}))
             expected = ("assigned" if kind == "task" else "active") if reason is not None else "blocked"
             if item["status"] != expected or item["revision"] != revision:
                 raise ContractError("State changed. Read the current record")
@@ -233,8 +245,9 @@ class Team:
                 text(reason, "blocker reason")
             status = "blocked" if reason is not None else ("assigned" if kind == "task" else "active")
             db.execute(f"UPDATE {table} SET status=?,review=?,revision=revision+1 WHERE id=?", (status, reason, record))
-            self.store.event(db, actor, kind + "." + status, {"id": record, "reason": reason})
-            self.store._send(db, actor, supervisor if reason is not None else owner, f"{kind} {record} {status}", reason or "The blocker is resolved. Continue the assigned work.")
+            recipient = supervisor if reason is not None else owner
+            self.store.record(db, decision, kind + "." + status, {"id": record, "reason": reason}, f"{kind} {record} {status}", notified={recipient})
+            self.store._send(db, actor, recipient, f"{kind} {record} {status}", reason or "The blocker is resolved. Continue the assigned work.")
             return self.store.get(db, table, record)
 
     def dispatch(self):
@@ -260,7 +273,7 @@ class Team:
             db.execute("UPDATE native_agents SET launch_error=?,attempts=?,retry_at=? WHERE agent=?", (error, attempts, time.time() + min(300, 2 ** min(attempts, 8)), agent))
             if attempts >= 3:
                 db.execute("UPDATE agents SET enabled=0,last_error=? WHERE id=?", (error, agent))
-            self.store.event(db, "operator", "agent.launch-failed", {"agent": agent, "error": error})
+            self.store.event(db, SYSTEM, "agent.launch-failed", {"agent": agent, "error": error})
         return {"recorded": True}
 
     def native_failed(self, agent, error):
@@ -268,7 +281,7 @@ class Team:
         with self.store.connect(True) as db:
             db.execute("UPDATE native_agents SET launch_error=? WHERE agent=?", (error, agent))
             db.execute("UPDATE agents SET enabled=0,last_error=? WHERE id=?", (error, agent))
-            self.store.event(db, "operator", "agent.native-failed", {"agent": agent, "error": error})
+            self.store.event(db, SYSTEM, "agent.native-failed", {"agent": agent, "error": error})
         return {"recorded": True}
 
     def wake(self, agent):
@@ -335,12 +348,14 @@ class Team:
             return self.hook(actor, arguments["event"])
         if operation == "inbox":
             agent = arguments.get("agent", actor)
-            if actor != "operator" and actor != agent:
-                raise ContractError("Read your assigned inbox")
+            if is_principal(agent):
+                raise ContractError("Name the agent whose inbox to read")
+            with self.store.connect() as db:
+                authorize(self.store, db, actor, "mail.read", inbox={"id": agent})
             return self.store.pending(agent, min(100, max(1, int(arguments.get("limit", 20)))), deliver=True)
         if operation.startswith("memory-"):
             return self.memory(actor, operation, arguments)
-        methods = {"role-add": self.store.add_role, "agent-add": self.add_agent, "agent-control": self.control,
+        methods = {"principal-set": self.store.set_principal, "role-add": self.store.add_role, "agent-add": self.add_agent, "agent-control": self.control,
                    "draft-create": self.planning.create, "draft-update": self.planning.update, "draft-release": self.planning.release,
                    "agent-reparent": self.planning.reparent, "mission-reassign": self.planning.reassign,
                    "mission-staff": self.planning.staff,

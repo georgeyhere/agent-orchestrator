@@ -68,6 +68,7 @@ export type TeamState = {
 	tasks: Task[];
 	messages: Message[];
 	pending: Record<string, number>;
+	principal?: { id: string; name: string };
 };
 export type MissionDraft = {
 	workers?: string[];
@@ -670,8 +671,7 @@ export function TeamView() {
 								<div className="space-y-4">
 									{state.missions.map((mission) => {
 										const missionTasks = state.tasks.filter((task) => task.mission === mission.id);
-										const supervisorSession = state.agents.find((agent) => agent.id === mission.supervisor)?.session_id ?? null;
-										const orchestratorSession = state.agents.find((agent) => agent.id === mission.orchestrator)?.session_id ?? null;
+										const principalName = state.principal?.name ?? "Principal";
 										const tasksAccepted = missionTasks.every((task) => task.status === "accepted");
 										return (
 										<article key={mission.id} className="rounded-lg border p-5">
@@ -696,34 +696,30 @@ export function TeamView() {
 												</details>
 											)}
 											<Evidence item={mission} />
-											{mission.status === "active" && tasksAccepted &&
-												(supervisorSession ? (
-													<MissionSubmitForm
-														missionId={mission.id}
-														reviewer={mission.supervisor}
-														busy={busy}
-														onSubmit={(result, evidence) =>
-															void execute("submit", { kind: "mission", record: mission.id, revision: mission.revision, result, evidence }, supervisorSession)
-														}
-													/>
-												) : (
-													<p className="mt-3 text-xs text-muted-foreground">Reviewer {mission.supervisor} has no attached session.</p>
-												))}
-											{mission.status === "review" &&
-												(orchestratorSession ? (
-													<ReviewForm
-														kind="mission"
-														recordId={mission.id}
-														reviewer={mission.orchestrator}
-														acceptLabel="Approve"
-														busy={busy}
-														onReview={(approve, feedback) =>
-															void execute("review", { kind: "mission", record: mission.id, revision: mission.revision, approve, feedback }, orchestratorSession)
-														}
-													/>
-												) : (
-													<p className="mt-3 text-xs text-muted-foreground">Reviewer {mission.orchestrator} has no attached session.</p>
-												))}
+											{mission.status === "active" && tasksAccepted && (
+												<MissionSubmitForm
+													missionId={mission.id}
+													reviewer={mission.supervisor}
+													principalName={principalName}
+													busy={busy}
+													onSubmit={(result, evidence) =>
+														void execute("submit", { kind: "mission", record: mission.id, revision: mission.revision, result, evidence })
+													}
+												/>
+											)}
+											{mission.status === "review" && (
+												<ReviewForm
+													kind="mission"
+													recordId={mission.id}
+													reviewer={mission.orchestrator}
+													principalName={principalName}
+													acceptLabel="Approve"
+													busy={busy}
+													onReview={(approve, feedback) =>
+														void execute("review", { kind: "mission", record: mission.id, revision: mission.revision, approve, feedback })
+													}
+												/>
+											)}
 											<div className="mt-4 space-y-3">
 												{missionTasks
 													.map((task) => (
@@ -738,21 +734,19 @@ export function TeamView() {
 															</div>
 															<p className="mt-2 whitespace-pre-wrap text-sm">{task.objective}</p>
 															<Evidence item={task} />
-															{task.status === "review" &&
-																(supervisorSession ? (
-																	<ReviewForm
-																		kind="task"
-																		recordId={task.id}
-																		reviewer={mission.supervisor}
-																		acceptLabel="Accept"
-																		busy={busy}
-																		onReview={(approve, feedback) =>
-																			void execute("review", { kind: "task", record: task.id, revision: task.revision, approve, feedback }, supervisorSession)
-																		}
-																	/>
-																) : (
-																	<p className="mt-3 text-xs text-muted-foreground">Reviewer {mission.supervisor} has no attached session.</p>
-																))}
+															{task.status === "review" && (
+																<ReviewForm
+																	kind="task"
+																	recordId={task.id}
+																	reviewer={mission.supervisor}
+																	principalName={principalName}
+																	acceptLabel="Accept"
+																	busy={busy}
+																	onReview={(approve, feedback) =>
+																		void execute("review", { kind: "task", record: task.id, revision: task.revision, approve, feedback })
+																	}
+																/>
+															)}
 														</div>
 													))}
 											</div>

@@ -479,6 +479,101 @@ class TeamTests(unittest.TestCase):
         with self.assertRaises(ContractError):
             self.action("agent-add", {"agent": "second-orch", "role": "orchestrator"})
 
+    def events(self, kind):
+        return [event | {"payload": json.loads(event["payload"])} for event in self.action("export")["events"] if event["kind"] == kind]
+
+    def test_principal_signs_off_under_own_identity_and_notifies_the_reviewer(self):
+        self.mission()
+        self.action("principal-set", {"name": "George"})
+        self.action("submit", {"kind": "task", "record": "task", "revision": 1, "result": "Done", "evidence": "Unit test passed"}, "worker")
+        self.action("review", {"kind": "task", "record": "task", "revision": 2, "approve": True, "feedback": "Verified"}, "chief")
+        self.action("submit", {"kind": "mission", "record": "mission", "revision": 1, "result": "Integrated", "evidence": "Integration test passed"}, "chief")
+        self.clear_mail("orch")
+        self.clear_mail("chief")
+        result = self.action("review", {"kind": "mission", "record": "mission", "revision": 2, "approve": True, "feedback": "Principal signoff"})
+        self.assertEqual(result["status"], "approved")
+        [event] = self.events("mission.reviewed")
+        self.assertEqual(event["actor"], "principal")
+        self.assertEqual(event["payload"]["authority"], "principal")
+        self.assertEqual(event["payload"]["in_place_of"], ["orch"])
+        notice = json.dumps(self.action("inbox", actor="orch"))
+        self.assertIn("Principal decision: mission mission approved", notice)
+        self.assertIn("The Principal (George) acted in your place", notice)
+        self.assertIn("Mission mission approved", json.dumps(self.action("inbox", actor="chief")))
+
+    def test_principal_task_review_is_attributed_and_agents_keep_their_limits(self):
+        self.mission()
+        self.action("submit", {"kind": "task", "record": "task", "revision": 1, "result": "Done", "evidence": "Unit test passed"}, "worker")
+        with self.assertRaisesRegex(ContractError, r"Only the Principal, the mission's supervisor \(chief\) can accept or return a task submission. You are worker, tier worker"):
+            self.action("review", {"kind": "task", "record": "task", "revision": 2, "approve": True, "feedback": "Self"}, "worker")
+        self.clear_mail("chief")
+        self.action("review", {"kind": "task", "record": "task", "revision": 2, "approve": False, "feedback": "Add a regression test"})
+        [event] = self.events("task.reviewed")
+        self.assertEqual((event["actor"], event["payload"]["in_place_of"]), ("principal", ["chief"]))
+        self.assertIn("Principal decision: task task assigned", json.dumps(self.action("inbox", actor="chief")))
+        self.assertIn("Add a regression test", json.dumps(self.action("inbox", actor="worker")))
+        agent_review = [e for e in self.events("task.assigned")][0]
+        self.assertEqual(agent_review["payload"]["authority"], "chief")
+        self.assertNotIn("in_place_of", agent_review["payload"])
+
+    def test_principal_block_does_not_duplicate_notices(self):
+        self.mission()
+        self.clear_mail("chief")
+        self.clear_mail("worker")
+        self.action("block", {"kind": "task", "record": "task", "revision": 1, "reason": "Wait for the API decision"})
+        chief = self.action("inbox", actor="chief")
+        self.assertEqual(len(chief), 1)
+        self.assertIn("Principal decision", json.dumps(self.action("inbox", actor="worker")))
+
+    def test_principal_and_system_identities_are_reserved(self):
+        for reserved in ("principal", "system", "operator"):
+            with self.assertRaisesRegex(ContractError, "reserved"):
+                self.action("agent-add", {"agent": reserved, "role": "worker", "parent": "chief"})
+        ready = [m for m in self.action("export")["messages"] if m["subject"] == "Team agent ready"]
+        self.assertTrue(ready and all(m["sender"] == "system" for m in ready))
+        with self.assertRaisesRegex(ContractError, "Only the message's recipient"):
+            self.action("ack", {"message": ready[0]["id"]})
+
+    def test_principal_identity_and_rules_are_visible_and_principal_only(self):
+        status = self.action("status")
+        self.assertEqual(status["principal"], {"id": "principal", "name": "Principal"})
+        self.assertEqual(status["authority"]["draft.release"]["grants"], ["principal"])
+        with self.assertRaisesRegex(ContractError, "Only the Principal can change the Principal's display name"):
+            self.action("principal-set", {"name": "Orch"}, "orch")
+        self.assertEqual(self.action("principal-set", {"name": "  George "})["name"], "George")
+        self.assertEqual(self.action("status")["principal"]["name"], "George")
+        with self.assertRaisesRegex(ContractError, "Only the Principal can enable the project team"):
+            self.action("enable", {}, "orch")
+
+    def test_instructions_list_each_tiers_authority(self):
+        worker = Team(self.request | {"operation": "instructions", "arguments": {"agent": "worker"}}).execute()["text"]
+        self.assertIn("You are a worker.", worker)
+        self.assertIn("submit a task result with evidence (`task.submit`) when you are the task's worker", worker)
+        self.assertNotIn("accept or return a task submission", worker)
+        self.assertIn("Only the Principal may:\n- enable the project team (`team.enable`)", worker)
+        self.assertIn("release a draft into an active mission (`draft.release`)", worker)
+        chief = Team(self.request | {"operation": "instructions", "arguments": {"agent": "chief"}}).execute()["text"]
+        self.assertIn("accept or return a task submission (`task.review`) when you are the mission's supervisor", chief)
+        self.assertIn("The Principal is Principal.", chief)
+
+    def test_authority_doc_lists_every_rule(self):
+        from aoteam.authority import RULES, describe
+        doc = (Path(__file__).resolve().parents[5] / "docs" / "team-authority.md").read_text(encoding="utf-8")
+        for action, entry in RULES.items():
+            summary = entry.summary[0].upper() + entry.summary[1:]
+            self.assertIn(f"| `{action}` | {summary} | {', '.join(describe(g) for g in entry.grants)} |", doc)
+
+    def test_reserved_legacy_agent_names_never_act_as_principal(self):
+        import sqlite3
+        with sqlite3.connect(self.root / "state" / "team.sqlite3") as db:
+            db.execute("UPDATE native_agents SET session_id='session-sneaky' WHERE agent='worker'")
+            db.execute("PRAGMA foreign_keys=OFF")
+            db.execute("UPDATE agents SET id='principal' WHERE id='worker'")
+            db.execute("UPDATE native_agents SET agent='principal' WHERE agent='worker'")
+        request = self.request | {"operation": "draft-release", "arguments": {"draft": "x", "revision": 1}, "session_id": "session-sneaky"}
+        with self.assertRaisesRegex(ContractError, "reserved ID"):
+            Team(request).execute()
+
     def test_mail_is_durable_until_recipient_handles_it(self):
         message = self.action("send", {"recipient": "worker", "subject": "Work", "body": "Details", "key": "one"}, "chief")
         output = self.action("hook", {"event": "PostToolUse"}, "worker")

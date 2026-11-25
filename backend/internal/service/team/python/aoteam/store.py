@@ -7,6 +7,7 @@ import json
 import sqlite3
 import uuid
 
+from .authority import DEFAULT_PRINCIPAL_NAME, PRINCIPAL, RESERVED_IDS, RULES, authorize
 from .config import ContractError, identifier, text
 
 
@@ -15,7 +16,7 @@ def now():
 
 
 DEFAULT_ROLES = {
-    "planner": ("planner", "Work with the user to clarify mission objectives, scope, constraints, acceptance criteria, and an execution plan. Maintain revisioned mission drafts through draft-create and draft-update. Ask focused questions in your conversation. Only the human operator releases a draft for execution. Do not assign execution tasks or approve missions."),
+    "planner": ("planner", "Work with the user to clarify mission objectives, scope, constraints, acceptance criteria, and an execution plan. Maintain revisioned mission drafts through draft-create and draft-update. Ask focused questions in your conversation. Only the Principal releases a draft for execution. Do not assign execution tasks or approve missions."),
     "orchestrator": ("orchestrator", "Coordinate project chiefs. Define missions and acceptance criteria. Review evidence and give final mission signoff or request changes. You may also supervise workers directly: assign tasks only to staffed direct reports, review each submission, then record mission results and explicit final signoff."),
     "chief": ("chief", "Drive your mission to completion. Assign bounded tasks to workers, resolve blockers, verify their results, and submit the mission for orchestrator review."),
     "worker": ("worker", "Complete your assigned tasks, verify the result, and report precise evidence to your supervisor: your chief, or your orchestrator on a directly supervised mission. Escalate blockers promptly."),
@@ -166,13 +167,39 @@ class Store:
         db.execute(f"DELETE FROM {kind}_workers WHERE {kind}=?", (owner,))
         db.executemany(f"INSERT INTO {kind}_workers VALUES (?,?)", [(owner, worker) for worker in workers])
 
-    def require(self, db, actor, tiers):
-        if actor == "operator":
-            return None
-        agent = self.get(db, "agents", actor)
-        if agent["tier"] not in tiers:
-            raise ContractError("This operation requires " + " or ".join(tiers))
-        return agent
+    @staticmethod
+    def caller(db, decision):
+        """The acting agent's record, or None when the Principal acted."""
+        return None if decision.principal else Store.get(db, "agents", decision.actor)
+
+    def principal(self, db):
+        row = db.execute("SELECT value FROM settings WHERE key='principal_name'").fetchone()
+        return {"id": PRINCIPAL, "name": row[0] if row else DEFAULT_PRINCIPAL_NAME}
+
+    def set_principal(self, actor, name):
+        text(name, "Principal name", 80)
+        with self.connect(True) as db:
+            decision = authorize(self, db, actor, "principal.update")
+            db.execute("INSERT OR REPLACE INTO settings VALUES ('principal_name',?)", (name.strip(),))
+            self.record(db, decision, "principal.updated", {"name": name.strip()})
+            return self.principal(db)
+
+    def record(self, db, decision, kind, payload, subject=None, notified=()):
+        """Audit an authorized action under the actor's own identity.
+
+        When the Principal acted where a rule names a specific agent, that
+        agent is told so its view of the record stays current.
+        """
+        self.event(db, decision.actor, kind, decision.audit(payload))
+        if not decision.in_place_of:
+            return
+        name = self.principal(db)["name"]
+        for agent in decision.in_place_of:
+            if agent in notified:
+                continue
+            self._send(db, decision.actor, agent, f"Principal decision: {subject or kind}"[:200],
+                       f"The Principal ({name}) acted in your place to {RULES[decision.action].summary}. "
+                       "The Principal's decision takes precedence. Read the current record with `ao team status` before acting on it.")
 
     def add_role(self, actor, role, tier, instructions):
         identifier(role)
@@ -180,9 +207,9 @@ class Store:
         if tier not in DEFAULT_ROLES:
             raise ContractError("Role tier must be planner, orchestrator, chief or worker")
         with self.connect(True) as db:
-            self.require(db, actor, {"orchestrator"})
+            decision = authorize(self, db, actor, "role.create")
             db.execute("INSERT INTO roles VALUES (?,?,?)", (role, tier, instructions))
-            self.event(db, actor, "role.created", {"id": role, "tier": tier})
+            self.record(db, decision, "role.created", {"id": role, "tier": tier})
         return {"id": role}
 
     def add_agent(self, actor, agent, role, parent=None, provider="codex"):
@@ -191,11 +218,12 @@ class Store:
 
     def register_agent(self, db, actor, agent, role, parent=None, provider="codex"):
         identifier(agent)
-        if agent == "operator":
-            raise ContractError("operator is reserved for the human control surface")
+        if agent in RESERVED_IDS:
+            raise ContractError(f"{agent} is reserved for the Principal and the system")
         if provider not in {"codex", "muse", "claude-code"}:
             raise ContractError("Unknown agent provider")
-        caller = self.require(db, actor, {"orchestrator", "chief"})
+        decision = authorize(self, db, actor, "agent.create")
+        caller = self.caller(db, decision)
         definition = self.get(db, "roles", role)
         tier = definition["tier"]
         if caller and (tier == "orchestrator" or (caller["tier"] == "chief" and (tier != "worker" or parent != actor))):
@@ -217,22 +245,20 @@ class Store:
             if caller and tier == "chief" and parent != actor:
                 raise ContractError("Chief must belong to this orchestrator")
         db.execute("INSERT INTO agents(id,tier,role,parent,provider) VALUES (?,?,?,?,?)", (agent, tier, role, parent, provider))
-        self.event(db, actor, "agent.created", {"id": agent, "role": role, "parent": parent, "provider": provider})
+        self.record(db, decision, "agent.created", {"id": agent, "role": role, "parent": parent, "provider": provider})
         return {"id": agent}
 
     def control(self, actor, agent, action):
         if action not in {"pause", "resume", "cancel"}:
             raise ContractError("Unknown agent action")
         with self.connect(True) as db:
-            caller = self.require(db, actor, {"orchestrator", "chief"})
             target = self.get(db, "agents", agent)
-            if caller and target["parent"] != actor:
-                raise ContractError("Agent control requires the direct supervisor")
+            decision = authorize(self, db, actor, "agent.control", target=target)
             if action == "resume":
                 db.execute("UPDATE agents SET enabled=1,cancelled=0,last_error=NULL WHERE id=?", (agent,))
             else:
                 db.execute("UPDATE agents SET enabled=0,cancelled=? WHERE id=?", (int(action == "cancel"), agent))
-            self.event(db, actor, "agent." + action, {"id": agent})
+            self.record(db, decision, "agent." + action, {"id": agent}, f"agent {agent} {action}")
         return {"id": agent, "action": action}
 
     def _send(self, db, sender, recipient, subject, body, key=None):
@@ -254,7 +280,7 @@ class Store:
 
     def send(self, actor, recipient, subject, body, key=None):
         with self.connect(True) as db:
-            self.require(db, actor, set(DEFAULT_ROLES))
+            authorize(self, db, actor, "mail.send")
             return self._send(db, actor, recipient, subject, body, key)
 
     def pending(self, agent, limit=20, deliver=False):
@@ -270,8 +296,7 @@ class Store:
     def acknowledge(self, actor, message):
         with self.connect(True) as db:
             row = self.get(db, "messages", message)
-            if row["recipient"] != actor:
-                raise ContractError("Only the recipient can acknowledge mail")
+            authorize(self, db, actor, "mail.ack", message=row)
             if not row["delivered_at"]:
                 raise ContractError("Read the inbox before acknowledging mail")
             if not row["acknowledged_at"]:

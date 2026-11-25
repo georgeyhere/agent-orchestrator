@@ -5,7 +5,7 @@ agent IDs. The supervisor is a chief or, for directly supervised missions, the
 project orchestrator. Plan this roster with the user. Drafts may be incomplete,
 but release requires at least one worker, and each worker must report to the
 chosen supervisor. Supervisors assign tasks only to workers named in the mission
-spec. The operator or orchestrator can revise execution staffing with
+spec. The Principal or orchestrator can revise execution staffing with
 `mission-staff`, using the current mission revision. Finish outstanding tasks
 before removing their worker. Transfer the whole roster explicitly when changing
 supervisors; do not silently change staffing.
@@ -55,7 +55,7 @@ tasks and coordinate file ownership before concurrent edits in a shared checkout
 Each project can have one planner alongside its orchestrator. The planner works
 with the user in its own conversation, searches project knowledge, and persists
 mission drafts with objectives, acceptance criteria, proposed supervisors, and plans.
-Drafts do not assign execution work. Only the human operator releases a reviewed
+Drafts do not assign execution work. Only the Principal releases a reviewed
 draft into an active mission. Released briefs remain as the planning record.
 After release, supervisors organize execution and the orchestrator gives final signoff.
 Org chart changes can update a worker's supervisor or transfer an active mission with
