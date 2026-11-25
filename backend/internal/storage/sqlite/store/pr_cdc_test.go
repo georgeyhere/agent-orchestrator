@@ -570,3 +570,87 @@ func TestClaimPR_TakesOverTerminatedOwnerAndEmitsSessionChangedCDC(t *testing.T)
 		t.Fatalf("bad change event: %+v", changed[0])
 	}
 }
+
+// Live /events consumers read the raw observed PR and check facts straight
+// from the CDC payload (#110), not only the derived state columns.
+func TestPRCDC_PayloadCarriesRawFacts(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	seedProject(t, s, "mer")
+	rec, err := s.CreateSession(ctx, sampleRecord("mer"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	pr := domain.PullRequest{
+		URL: "https://example/pr/7", SessionID: rec.ID, Number: 7, Draft: true,
+		CI: domain.CIPending, UpdatedAt: now,
+		Provider: "github", Host: "github.com", Repo: "acme/app", Title: "Add widget",
+		SourceBranch: "feat/widget", TargetBranch: "main", HeadSHA: "abc123",
+		Additions: 10, Deletions: 2, ChangedFiles: 3, Author: "octo",
+	}
+	check := domain.PullRequestCheck{Name: "build", CommitHash: "abc123", Status: "failed", Conclusion: "failure", URL: "https://ci/1", CreatedAt: now}
+	if err := s.WriteSCMObservation(ctx, pr, []domain.PullRequestCheck{check}, nil, nil, nil, ports.ReviewWritePreserve); err != nil {
+		t.Fatal(err)
+	}
+	pr.Draft = false
+	pr.CI = domain.CIFailing
+	pr.HeadSHA = "def456"
+	pr.UpdatedAt = now.Add(time.Second)
+	if err := s.WriteSCMObservation(ctx, pr, nil, nil, nil, nil, ports.ReviewWritePreserve); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.EventsAfter(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloads := map[cdc.EventType]map[string]any{}
+	for _, r := range rows {
+		var p map[string]any
+		if err := json.Unmarshal(r.Payload, &p); err != nil {
+			t.Fatalf("%s payload JSON: %v", r.Type, err)
+		}
+		payloads[r.Type] = p // keep the newest of each type
+	}
+
+	created := payloads[cdc.EventPRCreated]
+	if created == nil {
+		t.Fatal("missing pr_created event")
+	}
+	for key, want := range map[string]any{
+		"url": pr.URL, "number": float64(7), "provider": "github", "host": "github.com",
+		"repo": "acme/app", "title": "Add widget", "sourceBranch": "feat/widget",
+		"targetBranch": "main", "headSha": "abc123", "additions": float64(10),
+		"deletions": float64(2), "changedFiles": float64(3), "author": "octo",
+		"isDraft": true, "isMerged": false, "autoInjectCI": true, "state": "draft",
+	} {
+		if created[key] != want {
+			t.Errorf("pr_created[%q] = %#v, want %#v", key, created[key], want)
+		}
+	}
+
+	updated := payloads[cdc.EventPRUpdated]
+	if updated == nil {
+		t.Fatal("missing pr_updated event")
+	}
+	if updated["headSha"] != "def456" || updated["isDraft"] != false || updated["ci"] != "failing" {
+		t.Fatalf("pr_updated should carry the new facts, got %#v", updated)
+	}
+	for _, internal := range []string{"metadataHash", "ciHash", "reviewHash", "lastNudgeSignature"} {
+		if _, ok := updated[internal]; ok {
+			t.Errorf("pr_updated leaks internal bookkeeping %q", internal)
+		}
+	}
+
+	recorded := payloads[cdc.EventPRCheckRecorded]
+	if recorded == nil {
+		t.Fatal("missing pr_check_recorded event")
+	}
+	if recorded["conclusion"] != "failure" || recorded["url"] != "https://ci/1" || recorded["status"] != "failed" {
+		t.Fatalf("pr_check_recorded payload = %#v", recorded)
+	}
+	if _, ok := recorded["logTail"]; ok {
+		t.Error("pr_check_recorded must not carry the unbounded log tail")
+	}
+}
