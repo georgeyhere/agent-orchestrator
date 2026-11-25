@@ -83,14 +83,14 @@ func TestClaimCommandsCheckoutOutput(t *testing.T) {
 	}
 }
 
-func TestClaimCommandsHelpDocumentsMetadataOnly(t *testing.T) {
+func TestClaimCommandsHelpDocumentsCheckout(t *testing.T) {
 	for _, args := range [][]string{{"session", "claim-pr", "--help"}, {"spawn", "--help"}} {
 		out, _, err := executeCLI(t, Deps{}, args...)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out, "metadata only") || !strings.Contains(out, "does not check out the PR branch") {
-			t.Errorf("%v help must explain metadata-only claiming: %s", args, out)
+		if !strings.Contains(out, "verified head") || strings.Contains(out, "does not check out the PR branch") {
+			t.Errorf("%v help must explain the claim checkout: %s", args, out)
 		}
 	}
 }

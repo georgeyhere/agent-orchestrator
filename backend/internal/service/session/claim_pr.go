@@ -157,10 +157,11 @@ func (s *Service) ClaimPR(ctx context.Context, id domain.SessionID, ref string, 
 		return ClaimPRResult{}, err
 	}
 	prs = claimedFirst(prs, prURL)
-	// TODO: implement workspace branch checkout. Until then, leave BranchChanged
-	// false and have CLI output report that the workspace was unchanged, without
-	// assuming the session was already on the PR branch.
-	res := ClaimPRResult{PRs: prs, BranchChanged: false, DonorWasTerminated: outcome.OwnerTerminated}
+	// Checkout follows the recorded claim, so a refused or failed checkout
+	// leaves the claim in place and reports the workspace as unchanged. It
+	// outlives a caller that hangs up, so git is never killed mid-switch.
+	branchChanged := s.checkoutClaimedPR(context.WithoutCancel(ctx), rec, project, obs, prURL, pr.URL)
+	res := ClaimPRResult{PRs: prs, BranchChanged: branchChanged, DonorWasTerminated: outcome.OwnerTerminated}
 	if tookOver {
 		res.TakenOverFrom = []domain.SessionID{outcome.PreviousOwner}
 	}

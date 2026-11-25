@@ -18,7 +18,7 @@ Delivery follows the session interface:
 
 Feedback is signature-deduplicated. Orchestrator does not repeat an unchanged comment set on every poll.
 
-If feedback does not arrive, confirm the PR is claimed by this worker, the repository host is authenticated, and the comment remains unresolved on the current head. A claim records ownership but does not check out the PR branch. Read the linked review on GitHub or GitLab before asking the worker to act on an older comment.
+If feedback does not arrive, confirm the PR is claimed by this worker, the repository host is authenticated, and the comment remains unresolved on the current head. A claim records ownership and switches a clean worktree to the PR head; check the claim output if the worker is on another branch. Read the linked review on GitHub or GitLab before asking the worker to act on an older comment.
 
 <span id="ao-reviewer-agents" />
 ## Orchestrator reviewer agents

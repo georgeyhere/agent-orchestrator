@@ -286,6 +286,9 @@ type Service struct {
 	// githubRepos lets ClaimPR accept a PR on the repository a github.com
 	// origin was renamed or transferred to. Nil keeps exact origin matching.
 	githubRepos ports.GitHubRepositoryResolver
+	// prCheckout moves a claimant's worktree onto the claimed PR head. Nil
+	// keeps claims metadata-only.
+	prCheckout ports.WorkspacePRCheckout
 }
 
 // SetGitHubRepositoryResolver late-binds the resolver ClaimPR uses to follow

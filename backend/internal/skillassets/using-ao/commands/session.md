@@ -335,15 +335,19 @@ ao session claim-pr <session-id> <pr-ref> [flags]
 
 With one positional argument, `AO_SESSION_ID` supplies the session. This is the preferred form inside a worker. Pass both arguments from an orchestrator or external shell when targeting another session.
 
-Claiming changes ownership metadata only; it does not check out the PR branch.
-For implementation, preserve local edits, fetch the PR, and switch the session's
-registered worktree using the provider's verified full head commit SHA. Do not
-use `FETCH_HEAD` as a checkout target: a local branch with that name can make
-Git fail after replacing the index and working files. Verify `git status`, the
-branch, and `HEAD` after switching, even if Git reports failure. Stop on
-unexpected changes; continuing in a different worktree leaves Orchestrator displaying
-the original checkout. Review-only work should use the PR revision view or
-read-only revision diffs without switching the session's checkout.
+Claiming records ownership, then switches a clean single-repository worktree to
+the PR branch at the provider's verified head commit (`pr/<number>` for a fork's
+head). The output says `checkout: switched to PR branch` when it did. It reports
+`checkout: not performed; workspace unchanged` when the worktree had uncommitted
+changes, HEAD was detached, the local branch had commits not in the PR, another
+worktree held the branch, the head moved, or the project is a multi-repository
+workspace. In that case, preserve local edits, fetch the PR, and switch the
+session's registered worktree using the provider's verified full head commit
+SHA. Do not use `FETCH_HEAD` as a checkout target: a local branch with that name
+can make Git fail after replacing the index and working files. Verify
+`git status`, the branch, and `HEAD` after switching, even if Git reports
+failure. Stop on unexpected changes; continuing in a different worktree leaves
+Orchestrator displaying the original checkout.
 
 A review claim (`--review`) is the same claim made for review instead of work.
 It implies `--no-takeover`: it never takes the PR from another active session,

@@ -452,7 +452,7 @@ func newSessionClaimPRCommand(ctx *commandContext) *cobra.Command {
 		Use:   "claim-pr [<session-id>] <pr-ref>",
 		Short: "Attach an existing PR to a session",
 		Long: "Attach an existing PR to a session. When session-id is omitted, the current session is read from AO_SESSION_ID.\n\n" +
-			"Claiming updates PR ownership metadata only; it does not check out the PR branch. Verify the workspace branch and HEAD before editing.\n\n" +
+			"Claiming records PR ownership, then switches a clean single-repository worktree to the PR branch at the provider's verified head commit. A dirty worktree, a diverged local branch, a branch held by another worktree, or a head that moved leaves the workspace unchanged; the checkout line says which happened. Verify the workspace branch and HEAD before editing.\n\n" +
 			"With --review, the session claims someone else's PR to review it, not to work on it. It implies --no-takeover, so it never takes the PR from a session working on it. Before the claim, Orchestrator turns off the session's " +
 			"automatic fixing of CI failures, merge conflicts and review comments, and its native auto-review, so none of the PR's feedback reaches the agent. " +
 			"These are the session's \"Automatically fix\" switches, so they cover every PR it owns; use one session per review. " +

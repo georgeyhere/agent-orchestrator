@@ -146,14 +146,22 @@ them back. `--review` implies `--no-takeover`, so it never takes the PR from a
 session that is working on it. To take the PR over, run `ao session claim-pr <pr-ref> --review=false`,
 which turns CI and review-comment fixing back on.
 
-Both `ao session claim-pr` and `ao spawn --claim-pr` claim ownership metadata
-only. The claim step does not check out a branch or change HEAD, so
-`branchChanged: false` renders as `checkout: not performed; workspace unchanged`
-without asserting that HEAD matches the provider PR. `ao session claim-pr --json`
-preserves that field; `spawn` has no JSON mode. Verify the branch and HEAD before
-editing or pushing. Automatic checkout is deferred until exact-head verification,
-takeover, concurrent provider changes, and worktree preservation can be handled
-together.
+Both `ao session claim-pr` and `ao spawn --claim-pr` record the claim first,
+then check out the PR in a single-repository session's worktree. The daemon
+fetches the provider's pull ref (`refs/pull/<n>/head` or
+`refs/merge-requests/<n>/head`) from the remote that hosts the PR into a private
+ref, and switches only if the fetched commit is exactly the provider's head SHA.
+A same-repository PR lands on its source branch tracking that remote; a fork's
+lands on `pr/<n>` with no upstream. An existing local branch is only
+fast-forwarded. The worktree is left unchanged when it has uncommitted changes,
+HEAD is detached, the local branch has commits that are not in the PR, another
+worktree (such as a takeover donor) holds the branch, or the head moved since it
+was observed. Multi-repository workspace projects are not checked out yet. A
+switch renders as `checkout: switched to PR branch` (`branchChanged: true`);
+anything else renders as `checkout: not performed; workspace unchanged` without
+asserting that HEAD matches the provider PR, and a failed checkout never fails
+the claim. `ao session claim-pr --json` preserves that field; `spawn` has no
+JSON mode. Verify the branch and HEAD before editing or pushing.
 
 `ao report` persists a worker-originated coordination claim before reporting
 success. Checkpoints, free-form messages, and output-only reports batch until
