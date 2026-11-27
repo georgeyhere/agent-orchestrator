@@ -4,12 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import { TeamView, type TeamState } from "./TeamView";
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
+const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), search: {} as Record<string, string> }));
 vi.mock("../lib/api-client", () => ({
 	apiClient: { GET: mocks.get, POST: mocks.post },
 	apiErrorMessage: (error: { message: string }) => error.message,
 }));
 vi.mock("@tanstack/react-router", () => ({
+	useSearch: () => mocks.search,
 	Link: ({ children, params }: { children: ReactNode; params?: { projectId: string; sessionId: string } }) => (
 		<a href={params ? `/projects/${params.projectId}/sessions/${params.sessionId}` : "#"}>{children}</a>
 	),
@@ -116,6 +117,7 @@ function plannedState(): TeamState {
 }
 
 beforeEach(() => {
+	mocks.search = {};
 	mocks.get.mockReset();
 	mocks.post.mockReset();
 	mocks.get.mockImplementation(async (path: string) =>
@@ -754,6 +756,14 @@ describe("project teams cleanup", () => {
 		expect(screen.queryByRole("tab", { name: "Mailbox" })).not.toBeInTheDocument();
 		expect(screen.queryByRole("region", { name: "Team workflow" })).not.toBeInTheDocument();
 		expect(screen.queryByText("Role definitions")).not.toBeInTheDocument();
+	});
+
+	it("opens on the project and tab picked in the sidebar", async () => {
+		mocks.search = { project: "project", tab: "planning" };
+		serve(plannedState());
+		mount();
+		expect(await screen.findByRole("tab", { name: "Planning" })).toHaveAttribute("aria-selected", "true");
+		expect(await screen.findByRole("button", { name: "Release mission csv-export" })).toBeInTheDocument();
 	});
 
 	it("keeps role definitions in a drawer", async () => {

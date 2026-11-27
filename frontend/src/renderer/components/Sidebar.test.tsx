@@ -5050,6 +5050,27 @@ describe("sidebar team hierarchy", () => {
 		expect(rowWrapper("team orch").querySelector("[data-session-row]")).toHaveClass("h-8");
 	});
 
+	it("lists what needs the Principal and groups threads by live mission", async () => {
+		const fallback = getMock.getMockImplementation();
+		const state = {
+			...teamState,
+			agents: teamState.agents.map((agent) => (agent.id === "wb1" ? { ...agent, launch_error: "codex exited" } : agent)),
+			missions: [{ id: "export", supervisor: "chief-a", workers: ["wa1", "wa2"], status: "active" }],
+			tasks: [{ id: "endpoint", mission: "export", status: "review" }],
+		};
+		getMock.mockImplementation((path: string, options?: unknown) =>
+			path === "/api/v1/projects/{projectId}/team" ? Promise.resolve({ data: { result: state }, error: undefined }) : fallback?.(path, options),
+		);
+		renderSidebar({ workspaces: [teamWorkspace] });
+		const needs = await screen.findByRole("list", { name: "Needs you" });
+		expect(within(needs).getAllByRole("button").map((button) => button.textContent)).toEqual(["Review endpoint", "wb1 failed to start"]);
+		const list = await screen.findByTestId("session-list-proj-1");
+		await waitFor(() => expect(listedTitles(list).slice(0, 4)).toEqual(["Open team orch", "Open chief alpha", "Open alpha one", "Open alpha two"]));
+		expect(rowWrapper("chief alpha").previousElementSibling).toHaveTextContent("export");
+		fireEvent.click(within(needs).getByRole("button", { name: "Review endpoint" }));
+		expect(navigateMock).toHaveBeenCalledWith({ to: "/teams", search: { project: "proj-1", tab: "missions" } });
+	});
+
 	it("lists a stopped orchestrator once and opens its session", async () => {
 		mockTeamState();
 		renderSidebar({ workspaces: [{ ...teamWorkspace, sessions: teamWorkspace.sessions.filter((item) => item.id === "p1-orch") }] });

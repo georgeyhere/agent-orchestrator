@@ -129,6 +129,8 @@ export type TeamRowMeta = {
 	density: TeamRowDensity;
 	/** Reporting-line depth: crews under the orchestrator sit at 1, chief crews at 2. */
 	depth: 0 | 1 | 2;
+	/** Group caption shown above the first row of a mission or section. */
+	label?: string;
 };
 
 /**
@@ -276,4 +278,75 @@ export function stepSessionNav<T extends { sessionId: string; hostId?: string }>
 		if (accept(list[index])) return list[index];
 	}
 	return undefined;
+}
+
+/** Minimal mission shape for sidebar threads (satisfied by TeamView Mission). */
+export type TeamThreadMission = {
+	id: string;
+	supervisor: string;
+	workers?: string[];
+	status: string;
+};
+
+const LIVE_MISSION = new Set(["active", "blocked", "review"]);
+
+/**
+ * Sidebar threads for a team project, mirroring the Claude app's main thread
+ * with worker threads: the orchestrator first, then each live mission with its
+ * chief and staffed workers under a mission caption, then team agents not on a
+ * live mission, then the planner under "Plan", then ordinary sessions. Without
+ * a live mission this is the reporting-line hierarchy.
+ */
+export function applyTeamThreads<T extends { id: string }>(
+	sessions: readonly T[],
+	agents: readonly (TeamHierarchyAgent & { id: string })[],
+	missions: readonly TeamThreadMission[],
+): { sessions: T[]; rowMeta: Map<string, TeamRowMeta> } {
+	const meta = buildTeamSessionMeta(agents);
+	const hierarchy = applyTeamHierarchy(sessions, meta);
+	const live = missions.filter((mission) => LIVE_MISSION.has(mission.status));
+	if (!live.length) return hierarchy;
+	const byId = new Map(sessions.map((session) => [session.id, session]));
+	const agentById = new Map(agents.map((agent) => [agent.id, agent]));
+	const rows: Array<{ session: T; meta: TeamRowMeta }> = [];
+	const placed = new Set<string>();
+	let pendingLabel: string | undefined;
+	const place = (session: T | undefined, density: TeamRowDensity, depth: 0 | 1 | 2) => {
+		if (!session || placed.has(session.id)) return;
+		placed.add(session.id);
+		rows.push({ session, meta: { density, depth, ...(pendingLabel ? { label: pendingLabel } : {}) } });
+		pendingLabel = undefined;
+	};
+	const sessionOf = (agentId: string) => {
+		const sessionId = agentById.get(agentId)?.session_id;
+		return sessionId ? byId.get(sessionId) : undefined;
+	};
+	const orchId = teamOrchestratorSessionId(meta);
+	if (orchId) place(byId.get(orchId), "standard", 0);
+	for (const mission of live) {
+		pendingLabel = mission.id;
+		if (agentById.get(mission.supervisor)?.tier === "chief") place(sessionOf(mission.supervisor), "chief", 0);
+		for (const worker of mission.workers ?? []) place(sessionOf(worker), "worker", 1);
+	}
+	const planners: T[] = [];
+	const ordinary: T[] = [];
+	pendingLabel = "Not on a mission";
+	for (const session of hierarchy.sessions) {
+		if (placed.has(session.id)) continue;
+		const tier = meta.get(session.id)?.tier;
+		if (tier === "planner") planners.push(session);
+		else if (!tier) ordinary.push(session);
+		else {
+			const row = hierarchy.rowMeta.get(session.id);
+			place(session, row?.density ?? "standard", row?.depth ?? 0);
+		}
+	}
+	pendingLabel = "Plan";
+	for (const session of planners) place(session, "standard", 0);
+	pendingLabel = rows.length ? "Sessions" : undefined;
+	for (const session of ordinary) place(session, "standard", 0);
+	return {
+		sessions: rows.map((row) => row.session),
+		rowMeta: new Map(rows.map((row) => [row.session.id, row.meta])),
+	};
 }
