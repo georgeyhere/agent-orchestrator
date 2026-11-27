@@ -63,6 +63,13 @@ reporting to each chief. Defining missions or roles directly, sending a message,
 the role definitions, and the full message log sit under **More**. Editors open as
 dialogs and derive record IDs from the name you type.
 
+In the main sidebar, an expanded team project lists **Needs you** first (tasks
+to review, missions to sign off or submit, drafts ready to release, and agents
+that failed to start), then the orchestrator, then each live mission with its
+chief and workers, then agents not on a mission, then the planner under
+**Plan**. Selecting a thread opens its conversation or terminal; selecting a
+Needs you row opens Project teams on that project and tab.
+
 Desktop and browser launchers default to the same `~/.ao/team-dev` project state.
 Close the browser launcher with Ctrl+C before switching to the desktop app, so
 Electron can start and supervise its bundled daemon. Use `--data-dir`, `--port`,

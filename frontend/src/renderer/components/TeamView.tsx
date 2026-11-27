@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useSearch } from "@tanstack/react-router";
 import { apiClient, apiErrorMessage } from "../lib/api-client";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -185,6 +185,12 @@ export function TeamView() {
 			return data?.projects ?? [];
 		},
 	});
+	// The sidebar's Needs you rows open this page on a project and tab.
+	const search = useSearch({ strict: false }) as { project?: string; tab?: typeof tab };
+	useEffect(() => {
+		if (search.project) setProjectId(search.project);
+		if (search.tab) setTab(search.tab);
+	}, [search.project, search.tab]);
 	useEffect(() => {
 		if (!projectId && projects.data?.length) setProjectId(projects.data[0].id);
 	}, [projectId, projects.data]);

@@ -46,6 +46,7 @@ import {
 	useCallback,
 	useEffect,
 	useLayoutEffect,
+	Fragment,
 	memo,
 	useMemo,
 	useRef,
@@ -155,8 +156,9 @@ import { useSidebarOrderStore } from "../stores/sidebar-order-store";
 import { useSessionImportStore } from "../stores/session-import-store";
 import { sessionReadKey, useSessionReadStore, useSessionUnread } from "../stores/session-read-store";
 import { useOrchestratorReplyState } from "../stores/orchestrator-reply-store";
-import { applyOrder, applyTeamHierarchy, buildTeamSessionMeta, densityForTier, pinnedFirst, teamOrchestratorSessionId, type TeamRowDensity, type TeamRowMeta } from "../lib/sidebar-order";
+import { applyOrder, applyTeamThreads, buildTeamSessionMeta, densityForTier, pinnedFirst, teamOrchestratorSessionId, type TeamRowDensity, type TeamRowMeta } from "../lib/sidebar-order";
 import { useSidebarTeams } from "../hooks/useSidebarTeams";
+import { teamAttention, type TeamAttentionTab } from "../lib/team-attention";
 import type { TeamState } from "./TeamView";
 import { useKeybindingsStore } from "../stores/keybindings-store";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -547,6 +549,10 @@ function useSelection() {
 	const goHome = useCallback(() => void navigate({ to: "/" }), [navigate]);
 	const goAutomations = useCallback(() => void navigate({ to: "/automations" }), [navigate]);
 	const goTeams = useCallback(() => void navigate({ to: "/teams" }), [navigate]);
+	const goTeamItem = useCallback(
+		(projectId: string, tab: TeamAttentionTab) => void navigate({ to: "/teams", search: { project: projectId, tab } }),
+		[navigate],
+	);
 	const goArtifacts = useCallback(() => void navigate({ to: "/artifacts" }), [navigate]);
 	const goUsage = useCallback(() => void navigate({ to: "/usage" }), [navigate]);
 	const goStandaloneBoard = useCallback(() => void navigate({ to: "/sessions" }), [navigate]);
@@ -585,6 +591,7 @@ function useSelection() {
 		goHome,
 		goAutomations,
 		goTeams,
+		goTeamItem,
 		goArtifacts,
 		goUsage,
 		goStandaloneBoard,
@@ -595,7 +602,7 @@ function useSelection() {
 		goSettings,
 		goProject,
 		goSession,
-	}), [goArtifacts, goAutomations, goTeams, goUsage, goConnectMobile, goGlobalSettings, goHome, goProject, goSession, goSettings, goStandaloneBoard, params.hostId, params.projectId, params.sessionId, pathname]);
+	}), [goArtifacts, goAutomations, goTeams, goTeamItem, goUsage, goConnectMobile, goGlobalSettings, goHome, goProject, goSession, goSettings, goStandaloneBoard, params.hostId, params.projectId, params.sessionId, pathname]);
 }
 
 // Rows showing the red alert sit above the rest, but only in the default
@@ -1655,9 +1662,11 @@ const ProjectItem = memo(function ProjectItem({
 		[sessionOrder, visibleSessions],
 	);
 	const { sessions, rowMeta } = useMemo<{ sessions: WorkspaceSession[]; rowMeta: Map<string, TeamRowMeta> | undefined }>(
-		() => (teamMeta ? applyTeamHierarchy(orderedSessions, teamMeta) : { sessions: orderedSessions, rowMeta: undefined }),
-		[orderedSessions, teamMeta],
+		() => (team ? applyTeamThreads(orderedSessions, team.agents, team.missions) : { sessions: orderedSessions, rowMeta: undefined }),
+		[orderedSessions, team],
 	);
+	// Decisions waiting on the Principal, listed above the team's threads.
+	const attention = useMemo(() => (team ? teamAttention(team) : []), [team]);
 	// Publish the order shown here so keyboard navigation follows it.
 	useEffect(() => {
 		const sessionIds = sessions.map((session) => session.id);
@@ -2239,7 +2248,7 @@ const ProjectItem = memo(function ProjectItem({
 					{/* project-sidebar__sessions: indented under the project parent so worker
           sessions read as children without adding a persistent guide rail. */}
 		<AnimatePresence initial={false}>
-			{expanded && sessions.length > 0 && (
+			{expanded && (sessions.length > 0 || attention.length > 0) && (
 				<motion.div
 					key="sessions"
 					ref={projectSessionsRef}
@@ -2263,6 +2272,12 @@ const ProjectItem = memo(function ProjectItem({
 						exit={{ y: -12, opacity: 0 }}
 						transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.14, ease: [0.25, 0.46, 0.45, 0.94] }}
 					>
+											{attention.length > 0 && (
+												<TeamAttentionList
+													items={attention}
+													onOpen={(tab) => selection.goTeamItem(workspace.id, tab)}
+												/>
+											)}
 											<SessionReorderList
 										dndId={sessionDndId(projectKey)}
 										testId={`session-list-${projectKey}`}
@@ -2706,8 +2721,9 @@ function SessionReorderList({
 		return (
 			<SidebarMenuSub className={className} data-testid={testId}>
 				{sessions.map((session) => (
+					<Fragment key={session.id}>
+					<TeamGroupLabel label={rowMeta?.get(session.id)?.label} />
 					<SessionRow
-						key={session.id}
 						session={session}
 						active={activeSessionId === session.id}
 						cloud={cloudBadge && Boolean(session.cloud)}
@@ -2717,6 +2733,7 @@ function SessionReorderList({
 						onKilled={onKilled}
 						onOpen={() => onOpen(session.id)}
 					/>
+					</Fragment>
 				))}
 			</SidebarMenuSub>
 		);
@@ -2735,8 +2752,9 @@ function SessionReorderList({
 			<SortableContext items={sessionIds} strategy={verticalListSortingStrategy}>
 				<SidebarMenuSub className={className} data-testid={testId}>
 					{sessions.map((session) => (
+						<Fragment key={session.id}>
+						<TeamGroupLabel label={rowMeta?.get(session.id)?.label} />
 						<SortableSessionRow
-							key={session.id}
 							session={session}
 							active={activeSessionId === session.id}
 							consumeDragClick={dragClickGuard.consumeClick}
@@ -2750,10 +2768,53 @@ function SessionReorderList({
 							onKilled={onKilled}
 							onOpen={onOpen}
 						/>
+						</Fragment>
 					))}
 				</SidebarMenuSub>
 			</SortableContext>
 		</DndContext>
+	);
+}
+
+// A mission or section caption inside a team project's threads. Presentational
+// only: it is not a sortable row and never takes focus.
+function TeamGroupLabel({ label }: { label?: string }) {
+	if (!label) return null;
+	return (
+		<li role="presentation" data-team-group-label="" className="truncate px-2 pb-0.5 pt-2 text-caption text-muted-foreground">
+			{label}
+		</li>
+	);
+}
+
+// What the team needs from the Principal, above its threads. Each row opens
+// the Project teams page on the tab where the decision is made.
+function TeamAttentionList({
+	items,
+	onOpen,
+}: {
+	items: ReturnType<typeof teamAttention>;
+	onOpen: (tab: TeamAttentionTab) => void;
+}) {
+	return (
+		<SidebarMenuSub aria-label="Needs you" className="mx-0 ml-3.5 translate-x-0 gap-px border-l-0 px-0 pt-1">
+			<TeamGroupLabel label="Needs you" />
+			{items.map((item) => (
+				<SidebarMenuSubItem key={item.key} className="pl-0.5">
+					<Pressable
+						className={cn("group/nav-row relative flex h-7 w-full items-center gap-1.5 rounded-lg pl-1.5 pr-2 text-left text-sm", NAV_ROW_HIGHLIGHT_HOST_CLASS)}
+						data-team-attention={item.key}
+						onClick={() => onOpen(item.tab)}
+					>
+						<NavRowHighlight />
+						<span aria-hidden="true" className="relative z-[1] inline-flex shrink-0 items-center justify-center px-1.5">
+							<span className="size-2 rounded-full bg-status-needs-you" />
+						</span>
+						<span className="relative z-[1] truncate">{item.label}</span>
+					</Pressable>
+				</SidebarMenuSubItem>
+			))}
+		</SidebarMenuSub>
 	);
 }
 

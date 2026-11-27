@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	applyTeamHierarchy,
+	applyTeamThreads,
 	buildSidebarSessionOrder,
 	buildTeamSessionMeta,
 	densityForTier,
@@ -140,5 +141,38 @@ describe("buildSidebarSessionOrder with team rows", () => {
 	it("keeps the worker-only default without a stored order", () => {
 		const entries = buildSidebarSessionOrder({ workspaces: [workspace] });
 		expect(entries.map((entry) => entry.sessionId)).toEqual(["s-a", "s-b"]);
+	});
+});
+
+describe("applyTeamThreads", () => {
+	const agents = [
+		{ id: "orch", tier: "orchestrator", parent: null, session_id: "s-orch" },
+		{ id: "planner", tier: "planner", parent: null, session_id: "s-plan" },
+		{ id: "chief", tier: "chief", parent: "orch", session_id: "s-chief" },
+		{ id: "w1", tier: "worker", parent: "chief", session_id: "s-w1" },
+		{ id: "w2", tier: "worker", parent: "orch", session_id: "s-w2" },
+		{ id: "idle", tier: "worker", parent: "chief", session_id: "s-idle" },
+	];
+	const sessions = ["s-other", "s-idle", "s-w2", "s-w1", "s-plan", "s-chief", "s-orch"].map((id) => ({ id }));
+
+	it("groups live missions with their chief and workers under a caption, then the plan", () => {
+		const result = applyTeamThreads(sessions, agents, [
+			{ id: "export", supervisor: "chief", workers: ["w1"], status: "active" },
+			{ id: "docs", supervisor: "orch", workers: ["w2"], status: "review" },
+			{ id: "old", supervisor: "orch", workers: ["idle"], status: "accepted" },
+		]);
+		expect(result.sessions.map((session) => session.id)).toEqual(["s-orch", "s-chief", "s-w1", "s-w2", "s-idle", "s-plan", "s-other"]);
+		expect(result.rowMeta.get("s-orch")).toEqual({ density: "standard", depth: 0 });
+		expect(result.rowMeta.get("s-chief")).toEqual({ density: "chief", depth: 0, label: "export" });
+		expect(result.rowMeta.get("s-w1")).toEqual({ density: "worker", depth: 1 });
+		expect(result.rowMeta.get("s-w2")).toEqual({ density: "worker", depth: 1, label: "docs" });
+		expect(result.rowMeta.get("s-idle")?.label).toBe("Not on a mission");
+		expect(result.rowMeta.get("s-plan")?.label).toBe("Plan");
+		expect(result.rowMeta.get("s-other")?.label).toBe("Sessions");
+	});
+
+	it("falls back to the reporting-line hierarchy without a live mission", () => {
+		const result = applyTeamThreads(sessions, agents, [{ id: "old", supervisor: "chief", workers: ["w1"], status: "accepted" }]);
+		expect(result).toEqual(applyTeamHierarchy(sessions, buildTeamSessionMeta(agents)));
 	});
 });
