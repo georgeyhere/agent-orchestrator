@@ -724,6 +724,7 @@ describe("team review actions", () => {
 		const state = structuredClone(initial);
 		state.agents[0].session_id = "project-1";
 		state.agents[1].session_id = "project-2";
+		state.principal = { id: "principal", name: "George" };
 		state.agents.push(
 			{ ...state.agents[1], id: "worker-d", tier: "worker", role: "worker", parent: "orch" },
 			{ ...state.agents[1], id: "worker-b", tier: "worker", role: "worker", parent: "chief-one" },
@@ -731,29 +732,28 @@ describe("team review actions", () => {
 		return state;
 	}
 
-	it("accepts a directly supervised task as the orchestrator", async () => {
+	it("accepts a directly supervised task as the Principal", async () => {
 		const state = reviewState();
 		state.missions.push({ id: "direct", chief: "orch", supervisor: "orch", workers: ["worker-d"], orchestrator: "orch", objective: "Ship directly", criteria: "Verified", status: "active", revision: 1, result: null, evidence: null, review: null });
 		state.tasks.push({ id: "dt1", mission: "direct", worker: "worker-d", objective: "Do it", status: "review", revision: 2, result: "Done", evidence: "Tests", review: null });
 		serve(state);
 		mount();
 		fireEvent.click(await screen.findByRole("tab", { name: "Missions" }));
-		expect(screen.queryByRole("button", { name: "Accept as chief-one" })).not.toBeInTheDocument();
+		expect(screen.getByText(/Task dt1 is waiting for orch's review\. Deciding here records it as yours and notifies orch\./)).toBeInTheDocument();
 		fireEvent.change(screen.getByLabelText("Review feedback for dt1"), { target: { value: "Looks good" } });
-		fireEvent.click(screen.getByRole("button", { name: "Accept as orch" }));
+		fireEvent.click(screen.getByRole("button", { name: "Accept as George" }));
 		await waitFor(() =>
 			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
 				params: { path: { projectId: "project" } },
 				body: {
 					operation: "review",
 					arguments: { kind: "task", record: "dt1", revision: 2, approve: true, feedback: "Looks good" },
-					sessionId: "project-1",
 				},
 			}),
 		);
 	});
 
-	it("returns a chief-led task as its chief", async () => {
+	it("returns a chief-led task as the Principal", async () => {
 		const state = reviewState();
 		state.missions.push({ id: "led", chief: "chief-one", supervisor: "chief-one", workers: ["worker-b"], orchestrator: "orch", objective: "Ship led", criteria: "Verified", status: "active", revision: 1, result: null, evidence: null, review: null });
 		state.tasks.push({ id: "ct1", mission: "led", worker: "worker-b", objective: "Do it", status: "review", revision: 3, result: "Done", evidence: "Tests", review: null });
@@ -761,20 +761,19 @@ describe("team review actions", () => {
 		mount();
 		fireEvent.click(await screen.findByRole("tab", { name: "Missions" }));
 		fireEvent.change(screen.getByLabelText("Review feedback for ct1"), { target: { value: "Fix the edge case" } });
-		fireEvent.click(screen.getByRole("button", { name: "Return as chief-one" }));
+		fireEvent.click(screen.getByRole("button", { name: "Return as George" }));
 		await waitFor(() =>
 			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
 				params: { path: { projectId: "project" } },
 				body: {
 					operation: "review",
 					arguments: { kind: "task", record: "ct1", revision: 3, approve: false, feedback: "Fix the edge case" },
-					sessionId: "project-2",
 				},
 			}),
 		);
 	});
 
-	it("submits direct mission results as the orchestrator", async () => {
+	it("submits direct mission results as the Principal", async () => {
 		const state = reviewState();
 		state.missions.push({ id: "direct", chief: "orch", supervisor: "orch", workers: ["worker-d"], orchestrator: "orch", objective: "Ship directly", criteria: "Verified", status: "active", revision: 1, result: null, evidence: null, review: null });
 		state.tasks.push({ id: "dt1", mission: "direct", worker: "worker-d", objective: "Do it", status: "accepted", revision: 5, result: "Done", evidence: "Tests", review: "Verified" });
@@ -783,20 +782,19 @@ describe("team review actions", () => {
 		fireEvent.click(await screen.findByRole("tab", { name: "Missions" }));
 		fireEvent.change(screen.getByLabelText("Mission result for direct"), { target: { value: "Shipped" } });
 		fireEvent.change(screen.getByLabelText("Verification evidence for direct"), { target: { value: "Checks green" } });
-		fireEvent.click(screen.getByRole("button", { name: "Submit results as orch" }));
+		fireEvent.click(screen.getByRole("button", { name: "Submit results as George" }));
 		await waitFor(() =>
 			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
 				params: { path: { projectId: "project" } },
 				body: {
 					operation: "submit",
 					arguments: { kind: "mission", record: "direct", revision: 1, result: "Shipped", evidence: "Checks green" },
-					sessionId: "project-1",
 				},
 			}),
 		);
 	});
 
-	it("submits chief-led mission results as its chief", async () => {
+	it("submits chief-led mission results as the Principal", async () => {
 		const state = reviewState();
 		state.missions.push({ id: "led", chief: "chief-one", supervisor: "chief-one", workers: ["worker-b"], orchestrator: "orch", objective: "Ship led", criteria: "Verified", status: "active", revision: 1, result: null, evidence: null, review: null });
 		state.tasks.push({ id: "ct1", mission: "led", worker: "worker-b", objective: "Do it", status: "accepted", revision: 3, result: "Done", evidence: "Tests", review: "Verified" });
@@ -805,20 +803,19 @@ describe("team review actions", () => {
 		fireEvent.click(await screen.findByRole("tab", { name: "Missions" }));
 		fireEvent.change(screen.getByLabelText("Mission result for led"), { target: { value: "Shipped" } });
 		fireEvent.change(screen.getByLabelText("Verification evidence for led"), { target: { value: "Checks green" } });
-		fireEvent.click(screen.getByRole("button", { name: "Submit results as chief-one" }));
+		fireEvent.click(screen.getByRole("button", { name: "Submit results as George" }));
 		await waitFor(() =>
 			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
 				params: { path: { projectId: "project" } },
 				body: {
 					operation: "submit",
 					arguments: { kind: "mission", record: "led", revision: 1, result: "Shipped", evidence: "Checks green" },
-					sessionId: "project-2",
 				},
 			}),
 		);
 	});
 
-	it("signs off a submitted mission as the orchestrator in both modes", async () => {
+	it("signs off a submitted mission as the Principal in both modes", async () => {
 		for (const supervisor of ["orch", "chief-one"]) {
 			mocks.post.mockClear();
 			const state = reviewState();
@@ -828,14 +825,13 @@ describe("team review actions", () => {
 			mount();
 			fireEvent.click(await screen.findByRole("tab", { name: "Missions" }));
 			fireEvent.change(screen.getByLabelText(`Review feedback for ${id}`), { target: { value: "Final signoff" } });
-			fireEvent.click(screen.getByRole("button", { name: "Approve as orch" }));
+			fireEvent.click(screen.getByRole("button", { name: "Approve as George" }));
 			await waitFor(() =>
 				expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
 					params: { path: { projectId: "project" } },
 					body: {
 						operation: "review",
 						arguments: { kind: "mission", record: id, revision: 2, approve: true, feedback: "Final signoff" },
-						sessionId: "project-1",
 					},
 				}),
 			);
@@ -851,12 +847,12 @@ describe("team review actions", () => {
 		mount();
 		fireEvent.click(await screen.findByRole("tab", { name: "Missions" }));
 		expect(screen.queryByLabelText("Review feedback for ct1")).not.toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: "Accept as chief-one" })).not.toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: "Return as chief-one" })).not.toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: "Submit results as chief-one" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Accept as George" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Return as George" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Submit results as George" })).not.toBeInTheDocument();
 	});
 
-	it("names the detached reviewer instead of offering review actions", async () => {
+	it("lets the Principal decide when the reviewer has no attached session", async () => {
 		const state = reviewState();
 		state.agents[0].session_id = null;
 		state.missions.push({ id: "direct", chief: "orch", supervisor: "orch", workers: ["worker-d"], orchestrator: "orch", objective: "Ship directly", criteria: "Verified", status: "active", revision: 1, result: null, evidence: null, review: null });
@@ -864,7 +860,8 @@ describe("team review actions", () => {
 		serve(state);
 		mount();
 		fireEvent.click(await screen.findByRole("tab", { name: "Missions" }));
-		expect(await screen.findByText("Reviewer orch has no attached session.")).toBeInTheDocument();
+		expect(await screen.findByText(/Deciding here records it as yours and notifies orch\./)).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: "Accept as George" })).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: "Accept as orch" })).not.toBeInTheDocument();
 	});
 
@@ -877,7 +874,7 @@ describe("team review actions", () => {
 		fireEvent.click(await screen.findByRole("tab", { name: "Missions" }));
 		fireEvent.change(screen.getByLabelText("Review feedback for ct1"), { target: { value: "Verified" } });
 		mocks.post.mockResolvedValue({ error: { message: "State changed. Read the latest submission before reviewing" } });
-		fireEvent.click(screen.getByRole("button", { name: "Accept as chief-one" }));
+		fireEvent.click(screen.getByRole("button", { name: "Accept as George" }));
 		expect(await screen.findByRole("alert")).toHaveTextContent("State changed. Read the latest submission before reviewing");
 		expect(screen.getByLabelText("Review feedback for ct1")).toHaveValue("Verified");
 		expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
@@ -885,7 +882,6 @@ describe("team review actions", () => {
 			body: {
 				operation: "review",
 				arguments: { kind: "task", record: "ct1", revision: 2, approve: true, feedback: "Verified" },
-				sessionId: "project-2",
 			},
 		});
 	});

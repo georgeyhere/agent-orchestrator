@@ -1,10 +1,14 @@
 import { useState } from "react";
 import { Button } from "./ui/button";
 
+// The desktop GUI is the Principal's control surface. Decisions taken here are
+// recorded under the Principal's own identity, never as an agent; the agent
+// whose role normally owns the decision is notified by the team runtime.
 export function ReviewForm({
 	kind,
 	recordId,
 	reviewer,
+	principalName,
 	acceptLabel,
 	busy,
 	onReview,
@@ -12,6 +16,7 @@ export function ReviewForm({
 	kind: "task" | "mission";
 	recordId: string;
 	reviewer: string;
+	principalName: string;
 	acceptLabel: "Accept" | "Approve";
 	busy: boolean;
 	onReview: (approve: boolean, feedback: string) => void;
@@ -23,7 +28,8 @@ export function ReviewForm({
 			<p className="text-xs text-muted-foreground">
 				{kind === "task"
 					? `Task ${recordId} is waiting for ${reviewer}'s review.`
-					: `Mission ${recordId} is waiting for final signoff by ${reviewer}.`}
+					: `Mission ${recordId} is waiting for final signoff by ${reviewer}.`}{" "}
+				Deciding here records it as yours and notifies {reviewer}.
 			</p>
 			<label className="block text-sm">
 				Review feedback
@@ -36,10 +42,10 @@ export function ReviewForm({
 			</label>
 			<div className="flex flex-wrap gap-2">
 				<Button size="sm" disabled={!ready} onClick={() => onReview(true, feedback.trim())}>
-					{acceptLabel} as {reviewer}
+					{acceptLabel} as {principalName}
 				</Button>
 				<Button size="sm" variant="outline" disabled={!ready} onClick={() => onReview(false, feedback.trim())}>
-					Return as {reviewer}
+					Return as {principalName}
 				</Button>
 			</div>
 		</div>
@@ -49,11 +55,13 @@ export function ReviewForm({
 export function MissionSubmitForm({
 	missionId,
 	reviewer,
+	principalName,
 	busy,
 	onSubmit,
 }: {
 	missionId: string;
 	reviewer: string;
+	principalName: string;
 	busy: boolean;
 	onSubmit: (result: string, evidence: string) => void;
 }) {
@@ -63,7 +71,8 @@ export function MissionSubmitForm({
 	return (
 		<div className="mt-3 space-y-2 rounded-md border p-3">
 			<p className="text-xs text-muted-foreground">
-				All tasks are accepted. {reviewer} can record mission results for final signoff.
+				All tasks are accepted. {reviewer} can record mission results for final signoff. Submitting here records the
+				results as yours and notifies {reviewer}.
 			</p>
 			<label className="block text-sm">
 				Mission result
@@ -85,7 +94,7 @@ export function MissionSubmitForm({
 			</label>
 			<div className="flex flex-wrap gap-2">
 				<Button size="sm" disabled={!ready} onClick={() => onSubmit(result.trim(), evidence.trim())}>
-					Submit results as {reviewer}
+					Submit results as {principalName}
 				</Button>
 			</div>
 		</div>

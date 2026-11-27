@@ -111,8 +111,8 @@ For example, to configure this Windows user's existing datashard:
    conversation through Work with planner. Request mission planning with a draft
    ID and goal, then refine the brief, acceptance criteria, constraints, and plan
    together. The planner saves revisions in the Planning tab.
-6. Review the latest draft, choose a chief, and Release mission. Only the human
-   operator can release it. Drafts have no execution tasks or active mission until
+6. Review the latest draft, choose a chief, and Release mission. Only the Principal
+   can release it. Drafts have no execution tasks or active mission until
    release. The approved plan is copied into the mission and remains available.
    Define mission also remains available for direct creation of an active mission.
 7. Chiefs assign bounded worker tasks,
@@ -151,7 +151,7 @@ several missions under the same chief, but can have only one unfinished task.
 Missions display their staffing even before tasks exist, and the org chart lists
 the roster beside each mission. Use Edit staffing on a current active or blocked
 mission to change the roster; existing unfinished tasks prevent removing their
-worker. Staffing edits require the operator or assigned orchestrator and the
+worker. Staffing edits require the Principal or assigned orchestrator and the
 current mission revision. CLI/API: `mission-staff(mission,revision,workers)`.
 
 Transferring a mission moves the entire roster, including workers with no task
@@ -181,6 +181,17 @@ Each project has its own planner conversation, drafts, roles, reporting lines,
 missions, and mailbox. Switching the project selector selects that project's
 organization. Existing team databases upgrade additively on first use.
 
+## Authority and the Principal
+
+The Principal is the human who owns the project. The desktop GUI and any
+`ao team` call made outside a managed agent session act as the Principal, and
+the runtime records those actions under the Principal's own identity
+(`principal`), never as an agent. Every permission lives in one table; see
+[team-authority.md](team-authority.md). The Principal can approve, return, or
+submit in place of the role that normally owns the step. The event records
+`in_place_of`, and that agent is notified. `principal-set(name)` sets the name
+the GUI and agent instructions show.
+
 ## Agent and CLI operations
 
 `ao team` resolves its project through `--project`, `AO_PROJECT_ID`, the current
@@ -206,13 +217,14 @@ Each argument file is one JSON object. These are the operation arguments.
 | Operation | Arguments |
 | --- | --- |
 | `enable` | Optional `memory_root` |
+| `principal-set` | `name` (Principal only) |
 | `role-add` | `role`, `tier`, `instructions` |
 | `agent-add` | `agent`, `role`, optional `parent`, `provider` (`codex`, `muse`, or `claude-code`), `mode` (`tui` or `chat`; `muse` only supports `tui`) |
 | `agent-control` | `agent`, `action` (`pause`, `resume`, `cancel`) |
 | `mission-create` | `mission`, `chief`, `objective`, `criteria` |
 | `draft-create` | `draft`, `objective`, optional `criteria`, `plan`, `chief` |
 | `draft-update` | `draft`, `revision`, `objective`, `criteria`, `plan`, optional `chief` |
-| `draft-release` | `draft`, `revision` (human operator only) |
+| `draft-release` | `draft`, `revision` (Principal only) |
 | `agent-reparent` | `agent`, `parent`, `revision` (worker's current org revision) |
 | `mission-reassign` | `mission`, `chief`, `revision`, optional boolean `move_workers` |
 | `task-assign` | `task`, `mission`, `worker`, `objective` |
