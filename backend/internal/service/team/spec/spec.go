@@ -88,6 +88,7 @@ type Staffing struct {
 // provider models and effort.
 type Tier string
 
+// Model tiers.
 const (
 	TierCheap  Tier = "cheap"
 	TierStrong Tier = "strong"
@@ -144,6 +145,7 @@ type Example struct {
 // CheckKind matches the declared check kinds of the runtime's evidence phase.
 type CheckKind string
 
+// Check kinds.
 const (
 	CheckRun      CheckKind = "run"
 	CheckPRCI     CheckKind = "pr_ci"
@@ -178,6 +180,7 @@ const (
 // EvidenceKind matches the runtime's typed evidence items.
 type EvidenceKind string
 
+// Evidence kinds.
 const (
 	EvidenceRun    EvidenceKind = "run"
 	EvidenceCommit EvidenceKind = "commit"

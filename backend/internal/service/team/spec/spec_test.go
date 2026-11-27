@@ -67,8 +67,8 @@ func TestDecodeJSONAndYAMLAgree(t *testing.T) {
 
 func TestDecodeRejectsUnknownFields(t *testing.T) {
 	for name, doc := range map[string]string{
-		"json": `{"goal":"g","acceptence":[]}`,
-		"yaml": "goal: g\nacceptence: []\n",
+		"json": `{"goal":"g","acceptance_criteria":[]}`,
+		"yaml": "goal: g\nacceptance_criteria: []\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := DecodeBrief(strings.NewReader(doc)); err == nil {
