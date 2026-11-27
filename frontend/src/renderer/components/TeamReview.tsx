@@ -44,7 +44,7 @@ export function ReviewForm({
 				<Button size="sm" disabled={!ready} onClick={() => onReview(true, feedback.trim())}>
 					{acceptLabel} as {principalName}
 				</Button>
-				<Button size="sm" variant="outline" disabled={!ready} onClick={() => onReview(false, feedback.trim())}>
+				<Button size="sm" variant="secondary" disabled={!ready} onClick={() => onReview(false, feedback.trim())}>
 					Return as {principalName}
 				</Button>
 			</div>

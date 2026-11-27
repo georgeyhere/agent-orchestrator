@@ -55,11 +55,13 @@ is needed. It keeps its data directory and memory settings in
 Python and an adjacent llmwiki source checkout for the native daemon; Python and
 llmwiki remain explicit runtime dependencies.
 
-The team launcher opens **Project teams** directly. It provides **Planning**,
-**Missions**, **Workers**, **Agents**, **Org chart**, and **Mailbox** views.
-Workers show their supervisors, current task and mission, and session controls.
-The org chart shows project-level planner/orchestrator, chiefs and their missions,
-and the workers reporting to each chief.
+The team launcher opens **Project teams** directly. It opens on **Missions** and
+also provides **Planning**, **Agents**, and **Org chart** views. Agents show their
+supervisors, current task and mission, and session controls. The org chart shows
+project-level planner/orchestrator, chiefs and their missions, and the workers
+reporting to each chief. Defining missions or roles directly, sending a message,
+the role definitions, and the full message log sit under **More**. Editors open as
+dialogs and derive record IDs from the name you type.
 
 Desktop and browser launchers default to the same `~/.ao/team-dev` project state.
 Close the browser launcher with Ctrl+C before switching to the desktop app, so

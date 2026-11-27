@@ -77,6 +77,11 @@ function mount() {
 	);
 }
 
+async function openMenuItem(name: string) {
+	fireEvent.keyDown(await screen.findByRole("button", { name: "More team actions" }), { key: "Enter" });
+	fireEvent.click(await screen.findByRole("menuitem", { name }));
+}
+
 function serve(state: TeamState) {
 	mocks.get.mockImplementation(async (path: string) =>
 		path === "/api/v1/projects"
@@ -128,9 +133,9 @@ describe("project teams", () => {
 		for (const id of ["worker-b", "worker-c"]) state.agents.push({ ...state.agents[1], id, tier: "worker", role: "worker", parent: "chief-one" });
 		serve(state);
 		mount();
-		fireEvent.click(await screen.findByRole("button", { name: "Define mission" }));
+		await openMenuItem("Define mission");
 		fireEvent.change(screen.getByLabelText("Responsible supervisor"), { target: { value: "chief-one" } });
-		fireEvent.change(screen.getByLabelText("Mission ID"), { target: { value: "staffed-export" } });
+		fireEvent.change(screen.getByLabelText("Mission title"), { target: { value: "staffed-export" } });
 		fireEvent.change(screen.getByLabelText("Objective"), { target: { value: "Export reports" } });
 		fireEvent.change(screen.getByLabelText("Acceptance criteria"), { target: { value: "Verified" } });
 		fireEvent.click(screen.getByRole("checkbox", { name: /worker-b/ }));
@@ -182,16 +187,16 @@ describe("project teams", () => {
 	it("spawns Muse workers through the terminal interface", async () => {
 		mount();
 		fireEvent.click(await screen.findByRole("button", { name: "Spawn agent" }));
-		fireEvent.change(screen.getByLabelText("Agent provider"), {
+		fireEvent.change(screen.getByLabelText("Provider"), {
 			target: { value: "muse" },
 		});
-		expect(screen.getByLabelText("Agent interface")).toHaveValue("tui");
+		expect(screen.getByLabelText("Interface")).toHaveValue("tui");
 		expect(
-			within(screen.getByLabelText("Agent interface")).queryByRole("option", {
-				name: "chat",
+			within(screen.getByLabelText("Interface")).queryByRole("option", {
+				name: "Chat",
 			}),
 		).not.toBeInTheDocument();
-		fireEvent.change(screen.getByLabelText("Agent ID"), {
+		fireEvent.change(screen.getByLabelText("Agent name"), {
 			target: { value: "muse-worker" },
 		});
 		fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -214,19 +219,19 @@ describe("project teams", () => {
 	it("spawns Claude Code workers through either interface", async () => {
 		mount();
 		fireEvent.click(await screen.findByRole("button", { name: "Spawn agent" }));
-		fireEvent.change(screen.getByLabelText("Agent provider"), {
+		fireEvent.change(screen.getByLabelText("Provider"), {
 			target: { value: "claude-code" },
 		});
-		expect(screen.getByLabelText("Agent interface")).toHaveValue("tui");
+		expect(screen.getByLabelText("Interface")).toHaveValue("tui");
 		expect(
-			within(screen.getByLabelText("Agent interface")).getByRole("option", {
-				name: "chat",
+			within(screen.getByLabelText("Interface")).getByRole("option", {
+				name: "Chat",
 			}),
 		).toBeInTheDocument();
-		fireEvent.change(screen.getByLabelText("Agent ID"), {
+		fireEvent.change(screen.getByLabelText("Agent name"), {
 			target: { value: "claude-worker" },
 		});
-		fireEvent.change(screen.getByLabelText("Agent interface"), {
+		fireEvent.change(screen.getByLabelText("Interface"), {
 			target: { value: "chat" },
 		});
 		fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -263,7 +268,6 @@ describe("project teams", () => {
 			body: { path: "C:\\projects\\example" },
 		});
 		expect(screen.getByText("LLMWIKI_MEMORY_ROOT")).toBeInTheDocument();
-		expect(screen.getByText("2. Build your org chart")).toBeInTheDocument();
 		fireEvent.click(screen.getByRole("button", { name: "Save" }));
 		await waitFor(() =>
 			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
@@ -286,7 +290,7 @@ describe("project teams", () => {
 		expect(await screen.findByRole("alert")).toHaveTextContent("Git repository needs an initial commit");
 		expect(screen.getByLabelText("Project folder")).toHaveValue("C:\\projects\\empty");
 	});
-	it("shows workers, assigned missions, and their session controls in a dedicated view", async () => {
+	it("shows agents with their open tasks and session controls", async () => {
 		const state = structuredClone(initial);
 		state.agents.push({
 			...state.agents[1],
@@ -309,21 +313,23 @@ describe("project teams", () => {
 		});
 		serve(state);
 		mount();
-		fireEvent.click(await screen.findByRole("tab", { name: "Workers" }));
-		expect(screen.getByRole("heading", { name: "worker-one" })).toBeInTheDocument();
-		expect(screen.queryByRole("heading", { name: "orch" })).not.toBeInTheDocument();
-		expect(screen.getByText("Task verify-export / mission export / review")).toBeInTheDocument();
+		fireEvent.click(await screen.findByRole("tab", { name: "Agents" }));
+		const worker = screen.getByRole("article", { name: "worker-one" });
+		expect(within(worker).getByText("Worker · Codex · Reports to chief-one")).toBeInTheDocument();
+		expect(within(worker).getByText("Task verify-export · export · review")).toBeInTheDocument();
+		expect(screen.queryByText(/Revision/)).not.toBeInTheDocument();
 		expect(screen.getByRole("link", { name: "Open session" })).toHaveAttribute(
 			"href",
 			"/projects/project/sessions/project-5",
 		);
-		expect(screen.getByRole("button", { name: "Stop agent" })).toBeInTheDocument();
+		expect(within(worker).getByRole("button", { name: "Stop" })).toBeInTheDocument();
+		expect(within(worker).getByRole("button", { name: "Pause" })).toBeInTheDocument();
 	});
 	it("creates a project planner in chat mode without a supervisor", async () => {
 		mount();
 		fireEvent.click(await screen.findByRole("button", { name: "Create planner" }));
 		expect(screen.queryByLabelText("Supervisor")).not.toBeInTheDocument();
-		fireEvent.change(screen.getByLabelText("Agent ID"), {
+		fireEvent.change(screen.getByLabelText("Agent name"), {
 			target: { value: "planner-one" },
 		});
 		fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -350,7 +356,7 @@ describe("project teams", () => {
 		fireEvent.click(await screen.findByRole("button", { name: "Work with planner" }));
 		expect(screen.getByRole("link", { name: "Open planner conversation" })).toBeInTheDocument();
 		fireEvent.click(screen.getByRole("button", { name: "Request mission planning" }));
-		fireEvent.change(screen.getByLabelText("Draft ID"), {
+		fireEvent.change(screen.getByLabelText("Mission title"), {
 			target: { value: "new-goal" },
 		});
 		fireEvent.change(screen.getByLabelText("Mission objective"), {
@@ -455,6 +461,7 @@ describe("project teams", () => {
 		});
 		serve(state);
 		mount();
+		fireEvent.click(await screen.findByRole("tab", { name: "Org chart" }));
 		const chief = await screen.findByRole("article", {
 			name: "Chief chief-one",
 		});
@@ -497,6 +504,7 @@ describe("project teams", () => {
 		);
 		serve(state);
 		mount();
+		fireEvent.click(await screen.findByRole("tab", { name: "Org chart" }));
 		fireEvent.click(await screen.findByRole("button", { name: "Move worker worker-one" }));
 		fireEvent.change(screen.getByLabelText("New supervisor"), {
 			target: { value: "chief-two" },
@@ -520,7 +528,7 @@ describe("project teams", () => {
 		mount();
 		await screen.findByRole("button", { name: "Spawn agent" });
 		fireEvent.click(screen.getByRole("button", { name: "Spawn agent" }));
-		fireEvent.change(screen.getByLabelText("Agent ID"), {
+		fireEvent.change(screen.getByLabelText("Agent name"), {
 			target: { value: "worker-one" },
 		});
 		fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -547,12 +555,12 @@ describe("project teams", () => {
 		});
 		mount();
 		fireEvent.click(await screen.findByRole("button", { name: "Spawn agent" }));
-		fireEvent.change(screen.getByLabelText("Agent ID"), {
+		fireEvent.change(screen.getByLabelText("Agent name"), {
 			target: { value: "worker-one" },
 		});
 		fireEvent.click(screen.getByRole("button", { name: "Save" }));
 		expect(await screen.findByRole("alert")).toHaveTextContent("Chief belongs to another orchestrator");
-		expect(screen.getByLabelText("Agent ID")).toHaveValue("worker-one");
+		expect(screen.getByLabelText("Agent name")).toHaveValue("worker-one");
 	});
 
 	it("distinguishes delivered mail from a handled receipt", async () => {
@@ -573,7 +581,7 @@ describe("project teams", () => {
 				: { data: { result: state } },
 		);
 		mount();
-		fireEvent.click(await screen.findByRole("tab", { name: "Mailbox" }));
+		await openMenuItem("Message log");
 		expect(screen.getByText("Delivered · pending action")).toBeInTheDocument();
 		expect(screen.getByText("Read the full brief")).toBeInTheDocument();
 	});
@@ -595,7 +603,7 @@ describe("project teams", () => {
 		fireEvent.click(await screen.findByRole("button", { name: "Spawn agent" }));
 		expect(within(screen.getByLabelText("Supervisor")).getByRole("option", { name: "orch" })).toBeInTheDocument();
 		fireEvent.change(screen.getByLabelText("Supervisor"), { target: { value: "orch" } });
-		fireEvent.change(screen.getByLabelText("Agent ID"), { target: { value: "direct-worker" } });
+		fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "direct-worker" } });
 		fireEvent.click(screen.getByRole("button", { name: "Save" }));
 		await waitFor(() =>
 			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
@@ -616,11 +624,11 @@ describe("project teams", () => {
 		);
 		serve(state);
 		mount();
-		fireEvent.click(await screen.findByRole("button", { name: "Define mission" }));
+		await openMenuItem("Define mission");
 		fireEvent.change(screen.getByLabelText("Responsible supervisor"), { target: { value: "orch" } });
 		expect(screen.queryByRole("checkbox", { name: /worker-b/ })).not.toBeInTheDocument();
 		fireEvent.click(screen.getByRole("checkbox", { name: /worker-d/ }));
-		fireEvent.change(screen.getByLabelText("Mission ID"), { target: { value: "direct-work" } });
+		fireEvent.change(screen.getByLabelText("Mission title"), { target: { value: "direct-work" } });
 		fireEvent.change(screen.getByLabelText("Objective"), { target: { value: "Ship directly" } });
 		fireEvent.change(screen.getByLabelText("Acceptance criteria"), { target: { value: "Verified" } });
 		fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -637,6 +645,7 @@ describe("project teams", () => {
 		state.missions.push({ id: "direct", chief: "orch", supervisor: "orch", workers: ["worker-d"], orchestrator: "orch", objective: "Ship directly", criteria: "Verified", status: "active", revision: 1, result: null, evidence: null, review: null });
 		serve(state);
 		mount();
+		fireEvent.click(await screen.findByRole("tab", { name: "Org chart" }));
 		const card = await screen.findByRole("article", { name: "orchestrator orch" });
 		expect(within(card).getByText("direct / active")).toBeInTheDocument();
 		expect(within(card).getByText("worker-d / worker")).toBeInTheDocument();
@@ -660,6 +669,7 @@ describe("project teams", () => {
 		state.agents.push({ ...state.agents[1], id: "worker-d", tier: "worker", role: "worker", parent: "orch", revision: 2 });
 		serve(state);
 		mount();
+		fireEvent.click(await screen.findByRole("tab", { name: "Org chart" }));
 		const card = await screen.findByRole("article", { name: "orchestrator orch" });
 		fireEvent.click(within(card).getByRole("button", { name: "Move worker worker-d" }));
 		fireEvent.change(screen.getByLabelText("New supervisor"), { target: { value: "chief-one" } });
@@ -714,8 +724,43 @@ describe("project teams", () => {
 		serve(state);
 		mount();
 		fireEvent.click(await screen.findByRole("tab", { name: "Missions" }));
-		expect(screen.getByText("Directly supervised by orch · Revision 1")).toBeInTheDocument();
-		expect(screen.getByText("Supervisor chief-one · Final signoff orch · Revision 1")).toBeInTheDocument();
+		expect(screen.getByText("Directly supervised by orch")).toBeInTheDocument();
+		expect(screen.getByText("Supervisor chief-one · Final signoff orch")).toBeInTheDocument();
+	});
+});
+
+describe("project teams cleanup", () => {
+	it("derives the agent ID from its name and avoids one already in use", async () => {
+		mount();
+		fireEvent.click(await screen.findByRole("button", { name: "Spawn agent" }));
+		fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "Chief One" } });
+		expect(screen.getByText("chief-one-2")).toBeInTheDocument();
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(mocks.post).toHaveBeenCalledWith("/api/v1/projects/{projectId}/team", {
+				params: { path: { projectId: "project" } },
+				body: {
+					operation: "agent-add",
+					arguments: { agent: "chief-one-2", role: "worker", parent: "chief-one", mode: "tui", provider: "codex" },
+				},
+			}),
+		);
+	});
+
+	it("opens on missions with no standing explainer, mailbox or workers tab", async () => {
+		mount();
+		expect(await screen.findByRole("tab", { name: "Missions" })).toHaveAttribute("aria-selected", "true");
+		expect(screen.queryByRole("tab", { name: "Workers" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("tab", { name: "Mailbox" })).not.toBeInTheDocument();
+		expect(screen.queryByRole("region", { name: "Team workflow" })).not.toBeInTheDocument();
+		expect(screen.queryByText("Role definitions")).not.toBeInTheDocument();
+	});
+
+	it("keeps role definitions in a drawer", async () => {
+		mount();
+		await openMenuItem("Role definitions");
+		const drawer = await screen.findByRole("dialog", { name: "Role definitions" });
+		expect(within(drawer).getByText("Drive workers")).toBeInTheDocument();
 	});
 });
 

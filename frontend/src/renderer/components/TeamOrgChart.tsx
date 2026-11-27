@@ -2,16 +2,19 @@ import { useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
 import type { Agent, Mission, TeamAction, TeamState } from "./TeamView";
 import { Button } from "./ui/button";
+import { TeamDialog } from "./TeamDialog";
 
 export function TeamOrgChart({
 	projectId,
 	state,
 	busy,
+	error,
 	onAction,
 }: {
 	projectId: string;
 	state: TeamState;
 	busy: boolean;
+	error?: string;
 	onAction: TeamAction;
 }) {
 	const [worker, setWorker] = useState<Agent | null>(null);
@@ -60,24 +63,24 @@ export function TeamOrgChart({
 	}
 	return (
 		<section aria-label="Project org chart" className="space-y-5">
-			<p className="max-w-3xl text-sm text-muted-foreground">
-				This project's planner shapes missions with you. The orchestrator supervises chiefs, may supervise workers
-				directly, and signs off missions. Each chief manages its workers. Assignments below are saved for this project.
-			</p>
-			{(worker || mission) && (
-				<form
-					key={worker?.id ?? mission?.id}
-					onSubmit={(event) => void move(event)}
-					className="max-w-2xl space-y-4 rounded-lg border p-5"
-				>
-					<h2 className="font-medium">{worker ? `Move worker ${worker.id}` : `Transfer mission ${mission?.id}`}</h2>
+			<TeamDialog
+				open={Boolean(worker || mission)}
+				title={worker ? `Move worker ${worker.id}` : `Transfer mission ${mission?.id ?? ""}`}
+				description={worker ? undefined : "Move its workers too, so open tasks and reviews keep their owner."}
+				error={error}
+				onClose={() => {
+					setWorker(null);
+					setMission(null);
+				}}
+			>
+				<form key={worker?.id ?? mission?.id} onSubmit={(event) => void move(event)} className="space-y-4">
 					<label className="block text-sm">
 						New supervisor
 						<select
 							name="supervisor"
 							required
 							defaultValue=""
-							className="mt-1 block w-full rounded-md border bg-background p-2"
+							className="mt-1 block h-8 w-full rounded-md border bg-background px-2"
 						>
 							<option value="" disabled>
 								Select a chief or the orchestrator
@@ -95,17 +98,10 @@ export function TeamOrgChart({
 					{mission && (
 						<label className="flex gap-2 text-sm">
 							<input type="checkbox" name="move_workers" />
-							Move the mission's entire worker roster to the new supervisor
+							Move the mission's workers to the new supervisor
 						</label>
 					)}
-					<p className="text-xs text-muted-foreground">
-						An individual worker can move after its work and open mission staffing are cleared. Transfer a mission with its
-						workers to preserve ongoing task and review ownership.
-					</p>
-					<div className="flex gap-2">
-						<Button type="submit" disabled={busy}>
-							Save assignment
-						</Button>
+					<div className="flex justify-end gap-2">
 						<Button
 							type="button"
 							variant="ghost"
@@ -117,9 +113,12 @@ export function TeamOrgChart({
 						>
 							Cancel
 						</Button>
+						<Button type="submit" disabled={busy}>
+							Save assignment
+						</Button>
 					</div>
 				</form>
-			)}
+			</TeamDialog>
 			{!roots.length && (
 				<p className="text-sm">
 					Create the project's planner and orchestrator, then add chiefs and workers with Spawn agent.

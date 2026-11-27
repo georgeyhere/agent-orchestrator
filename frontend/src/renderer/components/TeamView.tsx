@@ -10,6 +10,11 @@ import { TeamOrgChart } from "./TeamOrgChart";
 import { aoBridge } from "../lib/bridge";
 import { MissionStaffingFields } from "./MissionStaffingFields";
 import { MissionSubmitForm, ReviewForm } from "./TeamReview";
+import { NameField, TeamDialog } from "./TeamDialog";
+import { ChevronDown } from "@/components/app-icons";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "./ui/sheet";
+import { uniqueId } from "../lib/team-ids";
 
 type Role = { id: string; tier: string; instructions: string };
 export type Agent = {
@@ -85,14 +90,43 @@ export type MissionDraft = {
 };
 export type TeamAction = (operation: string, arguments_: Record<string, unknown>, sessionId?: string) => Promise<boolean>;
 type Editor = "agent-add" | "role-add" | "mission-create" | "task-assign" | "send" | "enable";
+type Option = string | { value: string; label: string };
 type Field = {
 	name: string;
 	label: string;
-	options?: string[];
+	options?: Option[];
 	multiline?: boolean;
 	optional?: boolean;
 	value?: string;
 };
+
+const optionValue = (option: Option) => (typeof option === "string" ? option : option.value);
+const optionLabel = (option: Option) => (typeof option === "string" ? option : option.label);
+
+export const providerLabel = (provider: string) =>
+	provider === "muse" ? "Muse" : provider === "claude-code" ? "Claude Code" : "Codex";
+const tierLabel = (tier: string) => tier.charAt(0).toUpperCase() + tier.slice(1);
+const modeOption = (mode: string) => ({ value: mode, label: mode === "tui" ? "Terminal" : "Chat" });
+
+/** Which record an editor names, and the ID prefix used when a name starts with a digit. */
+const namedEditors: Partial<Record<Editor, { field: string; label: string; prefix: string }>> = {
+	"agent-add": { field: "agent", label: "Agent name", prefix: "agent" },
+	"role-add": { field: "role", label: "Role name", prefix: "role" },
+	"mission-create": { field: "mission", label: "Mission title", prefix: "mission" },
+	"task-assign": { field: "task", label: "Task title", prefix: "task" },
+};
+
+function MessageBody({ body }: { body: string }) {
+	try {
+		const parsed: unknown = JSON.parse(body);
+		if (parsed && typeof parsed === "object") {
+			return <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground">{JSON.stringify(parsed, null, 2)}</pre>;
+		}
+	} catch {
+		// Plain text body.
+	}
+	return <p className="mt-2 whitespace-pre-wrap break-words text-sm">{body}</p>;
+}
 
 async function teamAction(projectId: string, operation: string, arguments_: Record<string, unknown> = {}, sessionId?: string) {
 	const { data, error } = await apiClient.POST("/api/v1/projects/{projectId}/team", {
@@ -133,7 +167,9 @@ export function TeamView() {
 	const [projectId, setProjectId] = useState("");
 	const [staffingMission, setStaffingMission] = useState<Mission | null>(null);
 	const [taskMission, setTaskMission] = useState("");
-	const [tab, setTab] = useState<"org" | "planning" | "agents" | "workers" | "missions" | "mail">("org");
+	const [tab, setTab] = useState<"missions" | "planning" | "agents" | "org">("missions");
+	const [sheet, setSheet] = useState<"roles" | "log" | null>(null);
+	const [title, setTitle] = useState("");
 	const [editor, setEditor] = useState<Editor | null>(null);
 	const [actionError, setActionError] = useState("");
 	const [busy, setBusy] = useState(false);
@@ -208,8 +244,11 @@ export function TeamView() {
 	const selectedTaskMission = state?.missions.find((item) => item.id === taskMission && item.status === "active") ?? state?.missions.find((item) => item.status === "active");
 	const fields: Record<Editor, Field[]> = {
 		"agent-add": [
-			{ name: "agent", label: "Agent ID" },
-			{ name: "provider", label: "Agent provider", options: ["codex", "muse", "claude-code"] },
+			{
+				name: "provider",
+				label: "Provider",
+				options: ["codex", "muse", "claude-code"].map((value) => ({ value, label: providerLabel(value) })),
+			},
 			{
 				name: "role",
 				label: "Role",
@@ -234,26 +273,23 @@ export function TeamView() {
 					]),
 			{
 				name: "mode",
-				label: "Agent interface",
-				options: provider === "muse" ? ["tui"] : roleTier === "planner" ? ["chat", "tui"] : ["tui", "chat"],
+				label: "Interface",
+				options: (provider === "muse" ? ["tui"] : roleTier === "planner" ? ["chat", "tui"] : ["tui", "chat"]).map(modeOption),
 			},
 		],
 		"role-add": [
-			{ name: "role", label: "Role ID" },
 			{
 				name: "tier",
-				label: "Hierarchy tier",
-				options: ["worker", "chief", "orchestrator", "planner"],
+				label: "Level",
+				options: ["worker", "chief", "orchestrator", "planner"].map((value) => ({ value, label: tierLabel(value) })),
 			},
 			{ name: "instructions", label: "Role instructions", multiline: true },
 		],
 		"mission-create": [
-			{ name: "mission", label: "Mission ID" },
 			{ name: "objective", label: "Objective", multiline: true },
 			{ name: "criteria", label: "Acceptance criteria", multiline: true },
 		],
 		"task-assign": [
-			{ name: "task", label: "Task ID" },
 			{
 				name: "mission",
 				label: "Mission",
@@ -291,8 +327,17 @@ export function TeamView() {
 		send: "Send message",
 		enable: "Enable project team",
 	};
+	const takenIds: Record<string, string[]> = {
+		agent: state?.agents.map((item) => item.id) ?? [],
+		role: state?.roles.map((item) => item.id) ?? [],
+		mission: [...(state?.missions.map((item) => item.id) ?? []), ...(state?.drafts ?? []).map((item) => item.id)],
+		task: state?.tasks.map((item) => item.id) ?? [],
+	};
+	const named = editor ? namedEditors[editor] : undefined;
+	const generatedId = named ? uniqueId(title, takenIds[named.field], named.prefix) : "";
 	function edit(operation: Editor) {
 		setActionError("");
+		setTitle("");
 		setRole("worker");
 		setProvider("codex");
 		setEditor(operation);
@@ -301,6 +346,14 @@ export function TeamView() {
 		event.preventDefault();
 		if (!editor) return;
 		const arguments_: Record<string, unknown> = Object.fromEntries(new FormData(event.currentTarget));
+		delete arguments_.title;
+		if (named) {
+			if (!generatedId) {
+				setActionError(`${named.label} needs at least one letter or digit`);
+				return;
+			}
+			arguments_[named.field] = generatedId;
+		}
 		if (editor === "mission-create") arguments_.workers = new FormData(event.currentTarget).getAll("workers");
 		if (editor === "agent-add") {
 			if (!arguments_.parent) arguments_.parent = null;
@@ -313,16 +366,48 @@ export function TeamView() {
 		actionError ||
 		(team.error instanceof Error ? team.error.message : "") ||
 		(projects.error instanceof Error ? projects.error.message : "");
+	const hasPlanner = Boolean(state?.agents.some((agent) => agent.tier === "planner"));
+	const noProjects = !projects.isPending && !projects.data?.length;
+	const anyDialog = Boolean(editor || staffingMission || (addingProject && !noProjects));
+	const addProjectForm = (
+		<form onSubmit={addProject} className="space-y-4">
+			<label className="block text-sm">
+				Project folder
+				<Input required value={projectPath} onChange={(event) => setProjectPath(event.target.value)} className="mt-1" />
+			</label>
+			<div className="flex gap-2">
+				{window.ao && (
+					<Button
+						type="button"
+						variant="secondary"
+						onClick={async () => {
+							try {
+								const path = await aoBridge.app.chooseDirectory("Choose a project repository");
+								if (path) setProjectPath(path);
+							} catch (error) {
+								setActionError(error instanceof Error ? error.message : "Could not choose folder");
+							}
+						}}
+					>
+						Browse folders
+					</Button>
+				)}
+				<Button type="submit" disabled={busy}>
+					{busy ? "Adding project…" : "Add project folder"}
+				</Button>
+			</div>
+		</form>
+	);
 	return (
 		<div className="flex h-full min-h-0 flex-col">
 			<PageTopbar lead={<PageTopbarTitle>Project teams</PageTopbarTitle>} />
 			<div className="min-h-0 flex-1 overflow-auto p-6">
-				<div className="mb-5 flex flex-wrap items-center gap-3">
+				<div className="mb-5 flex flex-wrap items-center gap-2">
 					<label className="text-sm">
 						Project{" "}
 						<select
 							aria-label="Team project"
-							className="ml-2 rounded-md border bg-background px-3 py-2"
+							className="ml-2 h-8 rounded-md border bg-background px-2"
 							value={projectId}
 							onChange={(event) => {
 								setProjectId(event.target.value);
@@ -337,134 +422,95 @@ export function TeamView() {
 							))}
 						</select>
 					</label>
-					<Button
-						variant="outline"
-						onClick={() => {
-							setAddingProject(true);
-							setActionError("");
-						}}
-					>
-						Add project
-					</Button>
 					{state?.enabled && (
 						<>
 							<Button onClick={() => edit("agent-add")}>Spawn agent</Button>
 							<Button
-								variant="outline"
+								variant="secondary"
 								onClick={() => {
 									setTab("planning");
-									if (!state.agents.some((agent) => agent.tier === "planner")) {
+									if (!hasPlanner) {
 										edit("agent-add");
 										setRole("planner");
 									}
 								}}
 							>
-								{state.agents.some((agent) => agent.tier === "planner") ? "Work with planner" : "Create planner"}
-							</Button>
-							<Button variant="outline" onClick={() => edit("mission-create")}>
-								Define mission
-							</Button>
-							<Button variant="outline" onClick={() => edit("role-add")}>
-								Define role
-							</Button>
-							<Button variant="outline" onClick={() => edit("send")}>
-								Send message
+								{hasPlanner ? "Work with planner" : "Create planner"}
 							</Button>
 						</>
 					)}
+					<DropdownMenu>
+						<DropdownMenuTrigger asChild>
+							<Button variant="quiet" aria-label="More team actions">
+								More
+								<ChevronDown className="size-3.5" />
+							</Button>
+						</DropdownMenuTrigger>
+						<DropdownMenuContent align="start">
+							{state?.enabled && (
+								<>
+									<DropdownMenuItem onSelect={() => edit("mission-create")}>Define mission</DropdownMenuItem>
+									<DropdownMenuItem onSelect={() => edit("role-add")}>Define role</DropdownMenuItem>
+									<DropdownMenuItem onSelect={() => edit("send")}>Send message</DropdownMenuItem>
+									<DropdownMenuSeparator />
+									<DropdownMenuItem onSelect={() => setSheet("roles")}>Role definitions</DropdownMenuItem>
+									<DropdownMenuItem onSelect={() => setSheet("log")}>Message log</DropdownMenuItem>
+									<DropdownMenuSeparator />
+								</>
+							)}
+							<DropdownMenuItem
+								onSelect={() => {
+									setAddingProject(true);
+									setActionError("");
+								}}
+							>
+								Add project
+							</DropdownMenuItem>
+						</DropdownMenuContent>
+					</DropdownMenu>
 				</div>
-				{error && (
-					<p role="alert" className="mb-4 rounded-md border border-destructive p-3 text-sm text-destructive">
+				{error && !anyDialog && (
+					<p role="alert" className="mb-4 text-sm text-destructive">
 						{error}
 					</p>
 				)}
-				<section className="mb-5 rounded-lg border p-5" aria-label="Team workflow">
-					<h2 className="font-medium">Plan missions and organize your agents</h2>
-					<ol className="mt-3 grid gap-4 text-sm md:grid-cols-3">
-						<li>
-							<strong>1. Plan with your project planner</strong>
-							<p className="mt-1 text-muted-foreground">
-								Discuss goals, acceptance criteria, and a mission plan. Release the draft when you are ready.
-							</p>
-						</li>
-						<li>
-							<strong>2. Build your org chart</strong>
-							<p className="mt-1 text-muted-foreground">
-								Assign chiefs to an orchestrator and workers to chiefs or the orchestrator. Each mission has a responsible supervisor.
-							</p>
-						</li>
-						<li>
-							<strong>3. Execute and review</strong>
-							<p className="mt-1 text-muted-foreground">
-								Track missions and worker tasks. Supervisors review tasks and submit results; the orchestrator gives final signoff.
-							</p>
-						</li>
-					</ol>
-				</section>
-				{(addingProject || (!projects.isPending && !projects.data?.length)) && (
-					<form onSubmit={addProject} className="mb-5 max-w-2xl rounded-lg border p-5">
-						<h2 className="mb-2 font-medium">Add a local project</h2>
-						<p className="mb-4 text-sm text-muted-foreground">
-							Choose an existing Git repository with an initial commit, then enable its project team.
-						</p>
-						<label className="block text-sm">
-							Project folder
-							<Input
-								required
-								value={projectPath}
-								onChange={(event) => setProjectPath(event.target.value)}
-								className="mt-1"
-							/>
-						</label>
-						<div className="mt-4 flex gap-2">
-							{window.ao && (
-								<Button
-									type="button"
-									variant="outline"
-									onClick={async () => {
-										try {
-											const path = await aoBridge.app.chooseDirectory("Choose a project repository");
-											if (path) setProjectPath(path);
-										} catch (error) {
-											setActionError(error instanceof Error ? error.message : "Could not choose folder");
-										}
-									}}
-								>
-									Browse folders
-								</Button>
-							)}
-							<Button type="submit" disabled={busy}>
-								{busy ? "Adding project…" : "Add project folder"}
-							</Button>
-							{addingProject && (
-								<Button type="button" variant="ghost" onClick={() => setAddingProject(false)}>
-									Cancel
-								</Button>
-							)}
-						</div>
-					</form>
+				{noProjects && (
+					<section className="mb-5 max-w-2xl">
+						<h2 className="mb-3 font-medium">Add a local project</h2>
+						{addProjectForm}
+					</section>
 				)}
+				<TeamDialog
+					open={addingProject && !noProjects}
+					title="Add a local project"
+					description="Choose a Git repository with at least one commit."
+					error={actionError}
+					onClose={() => setAddingProject(false)}
+				>
+					{addProjectForm}
+				</TeamDialog>
 				{projectId && state && !state.enabled && !editor && (
-					<section className="max-w-2xl rounded-lg border p-6">
+					<section className="max-w-2xl">
 						<h2 className="mb-2 font-medium">Create a project team</h2>
 						<p className="mb-4 text-sm text-muted-foreground">
-							Connect this project to llmwiki/datashard, then create a planner, an orchestrator, mission chiefs, and
-							workers. Enabling creates a memory binding when the project needs one.
+							Enabling connects this project to llmwiki memory. You can then add a planner, an orchestrator, chiefs and
+							workers.
 						</p>
 						<Button onClick={() => edit("enable")}>Enable team</Button>
 					</section>
 				)}
-				{editor && (
-					<form key={editor + projectId} onSubmit={submit} className="mb-6 max-w-2xl rounded-lg border p-5">
-						<h2 className="mb-4 font-medium">{titles[editor]}</h2>
-						{editor === "mission-create" && <MissionStaffingFields agents={state?.agents ?? []} />}
-						{editor === "enable" && (
-							<p className="mb-4 text-sm text-muted-foreground">
-								Uses the system environment variable <code>LLMWIKI_MEMORY_ROOT</code> by default. Leave the override
-								blank to use it. If unset, llmwiki uses its standard memory location.
-							</p>
-						)}
-						<div className="space-y-4">
+				<TeamDialog open={editor !== null} title={editor ? titles[editor] : ""} error={actionError} onClose={() => setEditor(null)}>
+					{editor && (
+						<form key={editor + projectId} onSubmit={submit} className="space-y-4">
+							{named && (
+								<NameField label={named.label} value={title} id={generatedId} onChange={setTitle} />
+							)}
+							{editor === "mission-create" && <MissionStaffingFields agents={state?.agents ?? []} />}
+							{editor === "enable" && (
+								<p className="text-sm text-muted-foreground">
+									Uses <code>LLMWIKI_MEMORY_ROOT</code> by default, or llmwiki's standard location when it is unset.
+								</p>
+							)}
 							{fields[editor].map((field) => (
 								<label key={field.name} className="block text-sm">
 									{field.label}
@@ -472,7 +518,7 @@ export function TeamView() {
 										<select
 											name={field.name}
 											required
-											className="mt-1 block w-full rounded-md border bg-background p-2"
+											className="mt-1 block h-8 w-full rounded-md border bg-background px-2"
 											key={field.name === "mode" ? provider + roleTier : field.name === "worker" ? selectedTaskMission?.id : field.name}
 											value={
 												editor === "task-assign" && field.name === "mission" ? selectedTaskMission?.id : editor === "agent-add"
@@ -491,9 +537,9 @@ export function TeamView() {
 														: undefined
 											}
 										>
-											{field.options.map((value) => (
-												<option key={value} value={value}>
-													{value}
+											{field.options.map((option) => (
+												<option key={optionValue(option)} value={optionValue(option)}>
+													{optionLabel(option)}
 												</option>
 											))}
 										</select>
@@ -508,147 +554,179 @@ export function TeamView() {
 									)}
 								</label>
 							))}
-						</div>
-						<div className="mt-5 flex gap-2">
-							<Button type="submit" disabled={busy}>
-								{busy ? "Saving…" : "Save"}
-							</Button>
-							<Button type="button" variant="ghost" disabled={busy} onClick={() => setEditor(null)}>
-								Cancel
-							</Button>
-						</div>
-					</form>
-				)}
+							<div className="flex justify-end gap-2">
+								<Button type="button" variant="ghost" disabled={busy} onClick={() => setEditor(null)}>
+									Cancel
+								</Button>
+								<Button type="submit" disabled={busy}>
+									{busy ? "Saving…" : "Save"}
+								</Button>
+							</div>
+						</form>
+					)}
+				</TeamDialog>
 				{state?.enabled && (
 					<>
-						{staffingMission && <form className="mb-5 max-w-2xl space-y-4 rounded-lg border p-5" onSubmit={async (event) => {
-							event.preventDefault();
-							const workers = new FormData(event.currentTarget).getAll("workers");
-							if (await execute("mission-staff", { mission: staffingMission.id, revision: staffingMission.revision, workers })) setStaffingMission(null);
-						}}>
-							<h2 className="font-medium">Staff mission {staffingMission.id}</h2>
-							<MissionStaffingFields key={staffingMission.id} agents={state.agents} supervisor={staffingMission.supervisor} workers={staffingMission.workers} fixedSupervisor />
-							<Button disabled={busy}>Save staffing</Button>
-							<Button type="button" variant="ghost" onClick={() => setStaffingMission(null)}>Cancel</Button>
-						</form>}
-						<div className="mb-5 flex flex-wrap gap-2" role="tablist" aria-label="Project team">
-							{(["org", "planning", "missions", "workers", "agents", "mail"] as const).map((item) => (
+						<TeamDialog
+							open={staffingMission !== null}
+							title={staffingMission ? `Staff mission ${staffingMission.id}` : ""}
+							error={actionError}
+							onClose={() => setStaffingMission(null)}
+						>
+							{staffingMission && (
+								<form
+									className="space-y-4"
+									onSubmit={async (event) => {
+										event.preventDefault();
+										const workers = new FormData(event.currentTarget).getAll("workers");
+										if (await execute("mission-staff", { mission: staffingMission.id, revision: staffingMission.revision, workers })) setStaffingMission(null);
+									}}
+								>
+									<MissionStaffingFields key={staffingMission.id} agents={state.agents} supervisor={staffingMission.supervisor} workers={staffingMission.workers} fixedSupervisor />
+									<div className="flex justify-end gap-2">
+										<Button type="button" variant="ghost" onClick={() => setStaffingMission(null)}>Cancel</Button>
+										<Button disabled={busy}>Save staffing</Button>
+									</div>
+								</form>
+							)}
+						</TeamDialog>
+						<Sheet open={sheet !== null} onOpenChange={(open) => !open && setSheet(null)}>
+							<SheetContent className="w-full overflow-y-auto sm:max-w-lg">
+								<SheetHeader>
+									<SheetTitle>{sheet === "roles" ? "Role definitions" : "Message log"}</SheetTitle>
+									<SheetDescription className="sr-only">
+										{sheet === "roles" ? "Standing instructions for each team role" : "Every message sent between team agents"}
+									</SheetDescription>
+								</SheetHeader>
+								<div className="divide-y px-4 pb-4">
+									{sheet === "roles" &&
+										state.roles.map((item) => (
+											<section key={item.id} className="py-3">
+												<h3 className="text-sm font-medium">
+													{item.id} <span className="text-xs text-muted-foreground">{tierLabel(item.tier)}</span>
+												</h3>
+												<p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{item.instructions}</p>
+											</section>
+										))}
+									{sheet === "log" && !state.messages.length && (
+										<p className="py-3 text-sm text-muted-foreground">No team messages yet.</p>
+									)}
+									{sheet === "log" &&
+										state.messages.map((message) => (
+											<article key={message.id} className="py-3">
+												<div className="flex justify-between gap-3">
+													<h3 className="text-sm font-medium">{message.subject}</h3>
+													<span className="shrink-0 text-xs text-muted-foreground">
+														{message.acknowledged_at
+															? "Handled"
+															: message.delivered_at
+																? "Delivered · pending action"
+																: "Not yet read"}
+													</span>
+												</div>
+												<p className="mt-1 text-xs text-muted-foreground">
+													{message.sender} → {message.recipient} · {new Date(message.created_at).toLocaleString()}
+												</p>
+												<MessageBody body={message.body} />
+											</article>
+										))}
+								</div>
+							</SheetContent>
+						</Sheet>
+						<div className="mb-5 flex flex-wrap gap-1" role="tablist" aria-label="Project team">
+							{(["missions", "planning", "agents", "org"] as const).map((item) => (
 								<Button
 									key={item}
 									role="tab"
 									aria-selected={tab === item}
-									variant={tab === item ? "secondary" : "ghost"}
+									data-active={tab === item ? "true" : undefined}
+									variant="ghost"
+									size="sm"
 									onClick={() => setTab(item)}
 								>
-									{
-										{
-											org: "Org chart",
-											planning: "Planning",
-											agents: "Agents",
-											workers: "Workers",
-											missions: "Missions",
-											mail: "Mailbox",
-										}[item]
-									}
+									{{ org: "Org chart", planning: "Planning", agents: "Agents", missions: "Missions" }[item]}
 								</Button>
 							))}
 						</div>
 						{tab === "org" && (
-							<TeamOrgChart key={projectId} projectId={projectId} state={state} busy={busy} onAction={execute} />
+							<TeamOrgChart key={projectId} projectId={projectId} state={state} busy={busy} error={actionError} onAction={execute} />
 						)}
 						{tab === "planning" && (
-							<TeamPlanning key={projectId} projectId={projectId} state={state} busy={busy} onAction={execute} />
+							<TeamPlanning key={projectId} projectId={projectId} state={state} busy={busy} error={actionError} onAction={execute} />
 						)}
-						{(tab === "agents" || tab === "workers") && (
+						{tab === "agents" && (
 							<>
 								{!state.agents.length && (
-									<p className="text-sm text-muted-foreground">
-										Spawn an orchestrator, then chiefs and workers under their supervisors.
-									</p>
+									<p className="text-sm text-muted-foreground">No agents yet.</p>
 								)}
-								<div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-									{state.agents
-										.filter((agent) => tab !== "workers" || agent.tier === "worker")
-										.map((agent) => (
-											<article key={agent.id} className="rounded-lg border p-4">
-												<div className="flex justify-between gap-3">
-													<h2 className="font-medium">{agent.id}</h2>
-													<span className="text-xs text-muted-foreground">
-														{agent.enabled ? (agent.session_id ? "Attached" : "Launch queued") : "Paused"}
-													</span>
-												</div>
-												<p className="mt-2 text-sm text-muted-foreground">
-													{agent.tier} · {agent.role} · {agent.provider === "muse" ? "Muse" : agent.provider === "claude-code" ? "Claude Code" : "Codex"}
-												</p>
-												<p className="mt-1 text-sm">Supervisor {agent.parent ?? "project"}</p>
-												{state.tasks
-													.filter((task) => task.worker === agent.id && task.status !== "accepted")
-													.map((task) => (
-														<p key={task.id} className="mt-2 text-sm">
-															Task {task.id} / mission {task.mission} / {task.status}
-														</p>
-													))}
-												<p className="mt-2 text-sm">{state.pending[agent.id] ?? 0} pending messages</p>
-												{agent.launch_error && <p className="mt-2 text-sm text-destructive">{agent.launch_error}</p>}
-												<div className="mt-4 flex flex-wrap gap-2">
-													{agent.session_id && (
-														<Button asChild variant="outline" size="sm">
-															<Link
-																to="/projects/$projectId/sessions/$sessionId"
-																params={{
-																	projectId,
-																	sessionId: agent.session_id,
-																}}
-															>
-																Open session
-															</Link>
-														</Button>
-													)}
+								<div className="divide-y">
+									{state.agents.map((agent) => (
+										<article key={agent.id} aria-label={agent.id} className="py-3">
+											<div className="flex items-baseline justify-between gap-3">
+												<h2 className="font-medium">{agent.id}</h2>
+												<span className="text-xs text-muted-foreground">
+													{agent.enabled ? (agent.session_id ? "Running" : "Starting") : "Paused"}
+												</span>
+											</div>
+											<p className="mt-1 text-sm text-muted-foreground">
+												{[agent.role === agent.tier ? tierLabel(agent.tier) : `${agent.role} (${tierLabel(agent.tier)})`, providerLabel(agent.provider), agent.parent ? `Reports to ${agent.parent}` : null]
+													.filter(Boolean)
+													.join(" · ")}
+											</p>
+											{state.tasks
+												.filter((task) => task.worker === agent.id && task.status !== "accepted")
+												.map((task) => (
+													<p key={task.id} className="mt-1 text-sm">
+														Task {task.id} · {task.mission} · {task.status}
+													</p>
+												))}
+											{(state.pending[agent.id] ?? 0) > 0 && (
+												<p className="mt-1 text-sm">{state.pending[agent.id]} unread {state.pending[agent.id] === 1 ? "message" : "messages"}</p>
+											)}
+											{agent.launch_error && <p className="mt-1 text-sm text-destructive">{agent.launch_error}</p>}
+											<div className="mt-2 flex flex-wrap gap-1">
+												{agent.session_id && (
+													<Button asChild variant="secondary" size="sm">
+														<Link
+															to="/projects/$projectId/sessions/$sessionId"
+															params={{
+																projectId,
+																sessionId: agent.session_id,
+															}}
+														>
+															Open session
+														</Link>
+													</Button>
+												)}
+												<Button
+													size="sm"
+													variant="quiet"
+													disabled={busy}
+													onClick={() =>
+														void execute("agent-control", {
+															agent: agent.id,
+															action: agent.enabled ? "pause" : "resume",
+														})
+													}
+												>
+													{agent.enabled ? "Pause" : "Resume"}
+												</Button>
+												{agent.session_id && agent.enabled ? (
 													<Button
 														size="sm"
-														variant="ghost"
+														variant="destructive-ghost"
 														disabled={busy}
 														onClick={() =>
 															void execute("agent-control", {
 																agent: agent.id,
-																action: agent.enabled ? "pause" : "resume",
+																action: "cancel",
 															})
 														}
 													>
-														{agent.enabled ? "Pause dispatch" : "Resume"}
+														Stop
 													</Button>
-													{agent.session_id && agent.enabled ? (
-														<Button
-															size="sm"
-															variant="ghost"
-															disabled={busy}
-															onClick={() =>
-																void execute("agent-control", {
-																	agent: agent.id,
-																	action: "cancel",
-																})
-															}
-														>
-															Stop agent
-														</Button>
-													) : null}
-												</div>
-											</article>
-										))}
-								</div>
-								{tab === "workers" && !state.agents.some((agent) => agent.tier === "worker") && (
-									<p className="text-sm text-muted-foreground">
-										No workers yet. Use Spawn agent to add a worker under a chief or the orchestrator.
-									</p>
-								)}
-								<h2 className="mb-3 mt-7 font-medium">Role definitions</h2>
-								<div className="grid gap-3 lg:grid-cols-2">
-									{state.roles.map((item) => (
-										<article key={item.id} className="rounded-lg border p-4">
-											<h3 className="font-medium">
-												{item.id} <span className="text-xs text-muted-foreground">{item.tier}</span>
-											</h3>
-											<p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">{item.instructions}</p>
+												) : null}
+											</div>
 										</article>
 									))}
 								</div>
@@ -658,7 +736,7 @@ export function TeamView() {
 							<>
 								<div className="mb-4">
 									<Button
-										variant="outline"
+										variant="secondary"
 										disabled={!state.missions.some((item) => item.status === "active")}
 										onClick={() => edit("task-assign")}
 									>
@@ -666,7 +744,7 @@ export function TeamView() {
 									</Button>
 								</div>
 								{!state.missions.length && (
-									<p className="text-sm text-muted-foreground">Define a mission and acceptance criteria for a supervisor.</p>
+									<p className="text-sm text-muted-foreground">No missions yet. Plan one with your planner.</p>
 								)}
 								<div className="space-y-4">
 									{state.missions.map((mission) => {
@@ -682,11 +760,11 @@ export function TeamView() {
 											<p className="mt-1 text-xs text-muted-foreground">
 												{mission.supervisor === mission.orchestrator
 													? `Directly supervised by ${mission.supervisor}`
-													: `Supervisor ${mission.supervisor} · Final signoff ${mission.orchestrator}`} · Revision {mission.revision}
+													: `Supervisor ${mission.supervisor} · Final signoff ${mission.orchestrator}`}
 											</p>
 											<p className="mt-3 whitespace-pre-wrap text-sm">{mission.objective}</p>
 											<p className="mt-3 text-sm">Assigned workers: {mission.workers?.join(", ") || "Unassigned — set staffing before assigning tasks"}</p>
-											{["active", "blocked"].includes(mission.status) && <Button variant="outline" className="mt-3" onClick={() => { setStaffingMission(mission); setActionError(""); }}>Edit staffing for {mission.id}</Button>}
+											{["active", "blocked"].includes(mission.status) && <Button variant="secondary" size="sm" className="mt-3" onClick={() => { setStaffingMission(mission); setActionError(""); }}>Edit staffing for {mission.id}</Button>}
 											<p className="mt-3 text-xs text-muted-foreground">Acceptance criteria</p>
 											<p className="whitespace-pre-wrap text-sm">{mission.criteria}</p>
 											{mission.plan && (
@@ -728,9 +806,7 @@ export function TeamView() {
 																<h3 className="text-sm font-medium">
 																	{task.id} · {task.worker}
 																</h3>
-																<span className="text-xs">
-																	{task.status} · Revision {task.revision}
-																</span>
+																<span className="text-xs">{task.status}</span>
 															</div>
 															<p className="mt-2 whitespace-pre-wrap text-sm">{task.objective}</p>
 															<Evidence item={task} />
@@ -755,31 +831,6 @@ export function TeamView() {
 									})}
 								</div>
 							</>
-						)}
-						{tab === "mail" && (
-							<div className="space-y-3">
-								{!state.messages.length && (
-									<p className="text-sm text-muted-foreground">Team communication will appear here.</p>
-								)}
-								{state.messages.map((message) => (
-									<article key={message.id} className="rounded-lg border p-4">
-										<div className="flex justify-between gap-3">
-											<h2 className="font-medium">{message.subject}</h2>
-											<span className="text-xs text-muted-foreground">
-												{message.acknowledged_at
-													? "Handled"
-													: message.delivered_at
-														? "Delivered · pending action"
-														: "Pending delivery"}
-											</span>
-										</div>
-										<p className="mt-1 text-xs text-muted-foreground">
-											{message.sender} → {message.recipient} · {new Date(message.created_at).toLocaleString()}
-										</p>
-										<p className="mt-3 whitespace-pre-wrap break-words text-sm">{message.body}</p>
-									</article>
-								))}
-							</div>
 						)}
 					</>
 				)}

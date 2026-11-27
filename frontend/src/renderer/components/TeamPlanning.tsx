@@ -2,27 +2,34 @@ import { useState, type FormEvent } from "react";
 import { Link } from "@tanstack/react-router";
 import type { MissionDraft, TeamAction, TeamState } from "./TeamView";
 import { Button } from "./ui/button";
-import { Input } from "./ui/input";
 import { MissionStaffingFields } from "./MissionStaffingFields";
+import { NameField, TeamDialog } from "./TeamDialog";
+import { uniqueId } from "../lib/team-ids";
 
 export function TeamPlanning({
 	projectId,
 	state,
 	busy,
+	error,
 	onAction,
 }: {
 	projectId: string;
 	state: TeamState;
 	busy: boolean;
+	error?: string;
 	onAction: TeamAction;
 }) {
 	const [editing, setEditing] = useState<MissionDraft | "new" | null>(null);
+	const [title, setTitle] = useState("");
 	const planner = state.agents.find((agent) => agent.tier === "planner");
 	const drafts = state.drafts ?? [];
+	const draftId = uniqueId(title, [...drafts.map((draft) => draft.id), ...state.missions.map((mission) => mission.id)], "mission");
 	async function save(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault();
 		const values: Record<string, unknown> = Object.fromEntries(new FormData(event.currentTarget));
 		values.workers = new FormData(event.currentTarget).getAll("workers");
+		delete values.title;
+		if (editing === "new") values.draft = draftId;
 		if (!values.supervisor) values.supervisor = null;
 		if (editing && editing !== "new") {
 			values.draft = editing.id;
@@ -32,18 +39,13 @@ export function TeamPlanning({
 	}
 	return (
 		<section aria-label="Mission planning" className="max-w-4xl space-y-5">
-			<div className="rounded-lg border p-5">
-				<h2 className="font-medium">Plan missions with your project planner</h2>
-				<p className="mt-2 text-sm text-muted-foreground">
-					Discuss the goal in the planner's conversation. It saves the objective, acceptance criteria, proposed supervisor,
-					and execution plan here. You review and release a draft when it is ready.
-				</p>
-				<div className="mt-4 flex flex-wrap items-center gap-3">
+			<div>
+				<div className="flex flex-wrap items-center gap-3">
 					{planner ? (
 						<>
 							<span className="text-sm">Planner {planner.id}</span>
 							{planner.session_id ? (
-								<Button asChild variant="outline">
+								<Button asChild variant="secondary">
 									<Link
 										to="/projects/$projectId/sessions/$sessionId"
 										params={{ projectId, sessionId: planner.session_id }}
@@ -56,33 +58,35 @@ export function TeamPlanning({
 									{planner.launch_error ?? (planner.enabled ? "Planner launch queued" : "Planner is paused")}
 								</span>
 							)}
-							<Button onClick={() => setEditing("new")} disabled={busy}>
+							<Button
+								onClick={() => {
+									setTitle("");
+									setEditing("new");
+								}}
+								disabled={busy}
+							>
 								Request mission planning
 							</Button>
 						</>
 					) : (
-						<p className="text-sm">
-							Use Create planner above to add this project's planner. Its conversation and drafts stay with this
-							project.
-						</p>
+						<p className="text-sm">Use Create planner above to add this project's planner.</p>
 					)}
 				</div>
 			</div>
+			<TeamDialog
+				open={editing !== null}
+				title={editing === "new" ? "New mission draft" : `Edit draft ${editing?.id ?? ""}`}
+				description="Saving sends the draft to your planner. Work starts only when you release it."
+				error={error}
+				onClose={() => setEditing(null)}
+			>
 			{editing && (
 				<form
 					key={editing === "new" ? "new" : editing.id}
 					onSubmit={(event) => void save(event)}
-					className="space-y-4 rounded-lg border p-5"
+					className="space-y-4"
 				>
-					<h3 className="font-medium">
-						{editing === "new" ? "New mission draft" : `Edit ${editing.id} at revision ${editing.revision}`}
-					</h3>
-					{editing === "new" && (
-						<label className="block text-sm">
-							Draft ID
-							<Input name="draft" required className="mt-1" />
-						</label>
-					)}
+					{editing === "new" && <NameField label="Mission title" value={title} id={draftId} onChange={setTitle} />}
 					{(
 						[
 							["objective", "Mission objective"],
@@ -101,31 +105,25 @@ export function TeamPlanning({
 						</label>
 					))}
 					<MissionStaffingFields agents={state.agents} supervisor={editing === "new" ? "" : editing.supervisor ?? ""} workers={editing === "new" ? [] : editing.workers} />
-					<p className="text-xs text-muted-foreground">
-						Saving sends the draft to your planner. Execution starts only after you release a complete draft.
-					</p>
-					<div className="flex gap-2">
-						<Button type="submit" disabled={busy}>
-							Save draft
-						</Button>
+					<div className="flex justify-end gap-2">
 						<Button type="button" variant="ghost" disabled={busy} onClick={() => setEditing(null)}>
 							Cancel
+						</Button>
+						<Button type="submit" disabled={busy}>
+							Save draft
 						</Button>
 					</div>
 				</form>
 			)}
+			</TeamDialog>
 			{!drafts.length && (
-				<p className="text-sm text-muted-foreground">
-					No mission drafts yet. Start with a goal; refine the brief with your planner before releasing work.
-				</p>
+				<p className="text-sm text-muted-foreground">No mission drafts yet.</p>
 			)}
 			{drafts.map((draft) => (
 				<article key={draft.id} className="rounded-lg border p-5">
 					<div className="flex justify-between gap-3">
 						<h3 className="font-medium">{draft.id}</h3>
-						<span className="text-sm">
-							{draft.status} / revision {draft.revision}
-						</span>
+						<span className="text-sm">{draft.status}</span>
 					</div>
 					<p className="mt-1 text-xs text-muted-foreground">
 						Planner {draft.planner} / proposed supervisor {draft.supervisor ?? "unassigned"}
@@ -138,7 +136,7 @@ export function TeamPlanning({
 					<p className="whitespace-pre-wrap text-sm">{draft.plan || "Discuss the approach with your planner"}</p>
 					{draft.status === "draft" ? (
 						<div className="mt-4 flex flex-wrap gap-2">
-							<Button variant="outline" disabled={busy} onClick={() => setEditing(draft)}>
+							<Button variant="secondary" disabled={busy} onClick={() => setEditing(draft)}>
 								Edit draft {draft.id}
 							</Button>
 							<Button
