@@ -53,6 +53,29 @@ const progressLabels: BoardPullRequestLabels = {
 };
 
 describe("SessionsBoardView", () => {
+	it("nests workers below their chief across status lanes without hiding cards", () => {
+		const sessions = [
+			{ ...baseSession, id: "b", title: "Worker B", kanbanColumn: "building" as const },
+			{ ...baseSession, id: "chief", title: "Chief A", kanbanColumn: "building" as const },
+			{ ...baseSession, id: "c", title: "Worker C", kanbanColumn: "in_review" as const },
+		];
+		render(<SessionsBoardGridView columns={boardKanbanColumnOrder.map((column) => getKanbanColumnView(column))} labels={columnLabels}
+			sessions={sessions} parentSessionId={(session) => session.id === "chief" ? undefined : "chief"}
+			renderSessionCard={(session) => <button>{session.title}</button>} />);
+		const group = screen.getByRole("group", { name: "Agents reporting to Chief A" });
+		expect(within(group).getByRole("button", { name: "Worker B" })).toBeInTheDocument();
+		expect(within(group).getByRole("button", { name: "Worker C" })).toBeInTheDocument();
+		expect(screen.getAllByRole("button")).toHaveLength(3);
+		expect(within(group.closest('[data-column]') as HTMLElement).getByText("3")).toBeInTheDocument();
+	});
+
+	it("keeps orphaned and cyclic hierarchy references visible exactly once", () => {
+		const sessions = ["a", "b", "orphan"].map((id) => ({ ...baseSession, id, title: id }));
+		render(<SessionsBoardGridView columns={boardKanbanColumnOrder.map((column) => getKanbanColumnView(column))} labels={columnLabels}
+			sessions={sessions} parentSessionId={(session) => session.id === "a" ? "b" : session.id === "b" ? "a" : "missing"}
+			renderSessionCard={(session) => <button>{session.title}</button>} />);
+		for (const session of sessions) expect(screen.getAllByRole("button", { name: session.title })).toHaveLength(1);
+	});
 	it.each(["checking", "unavailable"] as const)("withholds provisional activity while %s", (statusReadiness) => {
 		render(<SessionCardView externalLink={ExternalLink}
 			labels={{ formatTime: () => "now", intakeIssue: (id) => id, pr: progressLabels, updatedAt: (at) => at }}

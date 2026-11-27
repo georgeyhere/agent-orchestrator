@@ -88,6 +88,7 @@ import (
 	shelltermsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/shellterm"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systemcheck"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/systeminstall"
+	teamsvc "github.com/aoagents/agent-orchestrator/backend/internal/service/team"
 	"github.com/aoagents/agent-orchestrator/backend/internal/service/terminaltitle"
 	usagesvc "github.com/aoagents/agent-orchestrator/backend/internal/service/usage"
 	sessionmanager "github.com/aoagents/agent-orchestrator/backend/internal/session_manager"
@@ -810,6 +811,12 @@ func Run(buildVersion string) (retErr error) {
 		sessionSvc.SetGitHubRepositoryResolver(githubRepos)
 	}
 	projectSvc := projectsvc.NewWithDeps(projectsvc.Deps{Store: store, Sessions: sessionSvc, DefaultHarness: domain.AgentHarness(cfg.Agent), Telemetry: telemetrySink, Milestones: installMilestones(cfg), Logger: log, GitHubRepos: githubRepos})
+	teamSvc := teamsvc.New(cfg.DataDir, projectSvc, sessionSvc, log)
+	if managed, ok := wiredSessMgr.(interface {
+		SetTeamInstructions(func(context.Context, domain.ProjectID, domain.SessionID) (string, error))
+	}); ok {
+		managed.SetTeamInstructions(teamSvc.Instructions)
+	}
 	go projectSvc.WarmCanonicalRepos(ctx)
 	reportSessions, ok := sessMgr.(reportSemanticSession)
 	if !ok {
@@ -1242,7 +1249,11 @@ func Run(buildVersion string) (retErr error) {
 	// Terminal hooks pass the hook process gate: a Claude process other than
 	// the session's own must not replace its activity or transcript.
 	hookActivity := hookprocess.New(lcStack.LCM, store, runtimeAdapter, nil, log)
+	teamContext, stopTeams := context.WithCancel(ctx)
+	teamDone := teamSvc.Start(teamContext)
+	defer func() { stopTeams(); <-teamDone }()
 	srv, err := httpd.NewWithDeps(cfg, log, termMgr, httpd.APIDeps{
+		Team:               teamSvc,
 		SessionForks:       sessionForkSvc,
 		Awake:              awakeSvc,
 		Projects:           projectSvc,

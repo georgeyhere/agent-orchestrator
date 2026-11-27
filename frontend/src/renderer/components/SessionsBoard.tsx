@@ -28,6 +28,7 @@ import {
 	type KanbanColumnView,
 } from "../lib/session-presentation";
 import { useSessionMenuAvailable } from "../hooks/useAppMenuCommand";
+import { useBoardTeamAssignments } from "../hooks/useBoardTeamAssignments";
 import { useSessionShortcut } from "../hooks/useAppShortcut";
 import { useTerminateSession } from "../hooks/useTerminateSession";
 import { useCloudCp } from "../hooks/useCloudCp";
@@ -93,6 +94,7 @@ export function SessionsBoard({ projectId, hostId }: SessionsBoardProps) {
 		? remoteProjectQuery.data ? [remoteProjectQuery.data] : []
 		: projectId ? all.filter((candidate) => candidate.id === projectId) : all;
 	const workspace = projectId ? workspaces[0] : undefined;
+	const teamAssignments = useBoardTeamAssignments(hostId || usesPreviewWorkspaceData ? [] : workspaces.filter((project) => project.kind !== CLOUD_PROJECT_KIND && project.id !== STANDALONE_WORKSPACE_ID).map((project) => project.id));
 	// A Freestyle cloud project's orchestrator starts in place (see
 	// OrchestratorStartingChat); its session does not exist yet, so the
 	// project's provider decides, as the control plane's does.
@@ -363,8 +365,10 @@ export function SessionsBoard({ projectId, hostId }: SessionsBoardProps) {
 						columns={columns}
 						key={scopeKey}
 						labels={boardLabels}
+						parentSessionId={(session) => teamAssignments.get(`${session.workspaceId}:${session.id}`)?.parentSessionId}
 						renderSessionCard={(session) => (
 							<BoardSessionCardAdapter
+								missionAssignments={teamAssignments.get(`${session.workspaceId}:${session.id}`)?.missions}
 								participants={participantsBySession.get(session.id)}
 								me={cloudUserId}
 								memory={memoryBySession?.get(session.id)}

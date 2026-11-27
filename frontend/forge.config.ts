@@ -53,6 +53,9 @@ function ignoreFromVitePackage(file: string): boolean {
 }
 
 async function prepareNativeDependencies(platform: NodeJS.Platform, arch: string): Promise<void> {
+	// N-API builds ship their supported runtime in the npm package. They work
+	// across Node/Electron versions and must not be rebuilt against a V8 ABI.
+	if (existsSync(path.join(process.cwd(), "node_modules", "better-sqlite3", "prebuilds", `${platform}-${arch}.node`))) return;
 	// Rebuild in the source tree, where prebuild-install and its helper packages
 	// are available. The Vite package intentionally carries only the resulting
 	// native runtime, not the install-time download toolchain.
@@ -278,7 +281,7 @@ const config: ForgeConfig = {
 			].join("\n");
 			writeFileSync("app-update.yml", yml);
 		},
-		packageAfterPrune: async (_forgeConfig, buildPath) => {
+		packageAfterPrune: async (_forgeConfig, buildPath, _electronVersion, platform, arch) => {
 			const nativeModule = path.join(
 				buildPath,
 				"node_modules",
@@ -287,7 +290,8 @@ const config: ForgeConfig = {
 				"Release",
 				"better_sqlite3.node",
 			);
-			if (!existsSync(nativeModule)) {
+			const napiModule = path.join(buildPath, "node_modules", "better-sqlite3", "prebuilds", `${platform}-${arch}.node`);
+			if (!existsSync(nativeModule) && !existsSync(napiModule)) {
 				throw new Error("Packaged app is missing the better-sqlite3 native runtime");
 			}
 		},
@@ -382,7 +386,9 @@ const config: ForgeConfig = {
 			return makeResults;
 		},
 	},
-	rebuildConfig: {},
+	// SQLite's N-API runtime is verified by the packaging hook above. Rebuilding
+	// it against Electron's V8 ABI would discard the vendor's portable binary.
+	rebuildConfig: { ignoreModules: ["better-sqlite3"] },
 	makers: [
 		// Windows installer: NSIS via electron-builder (see makers/maker-nsis.ts).
 		// Replaces Squirrel.Windows, which only does per-user installs with no

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,10 +27,7 @@ vi.mock("./makers/maker-dmg", async (importOriginal) => {
 });
 // The layout check mounts the dmg with hdiutil; its behavior is covered by
 // scripts/build-mac-dmg.test.mjs and the mac-dmg-layout CI job.
-vi.mock("./scripts/build-mac-dmg.mjs", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("./scripts/build-mac-dmg.mjs")>();
-	return { ...actual, checkMacDmgLayout };
-});
+vi.mock("./scripts/build-mac-dmg.mjs", () => ({ checkMacDmgLayout, macDmgLayout: vi.fn() }));
 
 import config, { extraResourcesForPlatform, labelMacBundle, macSignOptionsForFile, WINDOWS_DISPLAY_NAME } from "./forge.config";
 
@@ -83,7 +81,8 @@ function acpNodeWith(contents: Buffer): string {
 	);
 	mkdirSync(binDir, { recursive: true });
 	writeFileSync(join(binDir, "node"), contents);
-	return join(binDir, "node");
+	// Model a macOS bundle path even when this fixture runs on Windows.
+	return join(binDir, "node").replaceAll("\\", "/");
 }
 
 beforeEach(() => {
@@ -439,6 +438,16 @@ describe("packaged authentication callback registration", () => {
 });
 
 describe("packaged native dependencies", () => {
+	it("accepts the vendor's N-API binary for the selected desktop target", async () => {
+		const directory = join(fixtureDir, "node_modules", "better-sqlite3", "prebuilds");
+		mkdirSync(directory, { recursive: true });
+		writeFileSync(join(directory, "win32-x64.node"), "native fixture");
+		const hook = config.hooks?.packageAfterPrune;
+		if (typeof hook !== "function") throw new Error("missing native runtime verification");
+		await expect(hook(config, fixtureDir, "44.7.0", "win32", "x64")).resolves.toBeUndefined();
+		await expect(hook(config, fixtureDir, "44.7.0", "win32", "arm64")).rejects.toThrow("missing the better-sqlite3 native runtime");
+		expect(config.rebuildConfig?.ignoreModules).toContain("better-sqlite3");
+	});
 	it("keeps the SQLite runtime available to the Vite main bundle", () => {
 		const ignore = config.packagerConfig?.ignore;
 		expect(ignore).toBeTypeOf("function");
@@ -451,6 +460,7 @@ describe("packaged native dependencies", () => {
 		expect(ignore("/.vite/renderer/main_window/assets/index-RzpjvxTk.js")).toBe(false);
 		expect(ignore("/node_modules")).toBe(false);
 		expect(ignore("/node_modules/better-sqlite3/build/Release/better_sqlite3.node")).toBe(false);
+		expect(ignore("/node_modules/better-sqlite3/prebuilds/win32-x64.node")).toBe(false);
 		expect(ignore("/node_modules/bindings/bindings.js")).toBe(false);
 		expect(ignore("/node_modules/file-uri-to-path/index.js")).toBe(false);
 		expect(ignore("/node_modules/react/index.js")).toBe(true);

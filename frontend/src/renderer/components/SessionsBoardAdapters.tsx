@@ -107,6 +107,7 @@ export function sessionsBoardLabels(t: TFunction): BoardColumnLabels {
 }
 
 export function BoardSessionCardAdapter({
+	missionAssignments,
 	me,
 	participants,
 	memory,
@@ -118,6 +119,7 @@ export function BoardSessionCardAdapter({
 	onTerminate,
 	session,
 }: {
+	missionAssignments?: Array<{ id: string; objective: string; status: string }>;
 	/** Live reading of the session's process tree, for the card's resource chip. */
 	memory?: SessionMemoryReading;
 	/** Colour for the chip; neutral unless this card is part of the fix. */
@@ -137,6 +139,9 @@ export function BoardSessionCardAdapter({
 }) {
 	return (
 		<DesktopSessionCard
+			footer={missionAssignments && <div className="border-t border-border px-3.5 py-2 text-xs" aria-label="Assigned missions">
+				{missionAssignments.length ? <ul className="space-y-1">{missionAssignments.map((mission) => <li key={mission.id} title={mission.objective} className="break-words">Mission: {mission.id} <span className="text-muted-foreground">({mission.status})</span></li>)}</ul> : <span className="text-muted-foreground">No active missions</span>}
+			</div>}
 			me={me}
 			participants={participants}
 			memory={memory}

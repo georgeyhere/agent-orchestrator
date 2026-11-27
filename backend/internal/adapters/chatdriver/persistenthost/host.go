@@ -116,6 +116,49 @@ type Descriptor struct {
 	Token                string    `json:"token"`
 	PID                  int       `json:"pid"`
 	StartedAt            time.Time `json:"startedAt"`
+	// BootID identifies this provider process boot. It is minted at spawn,
+	// exported to the provider (and its hook children) through
+	// providerBootEnv, and recorded here so reconnects resolve the same
+	// value. Team mailbox hooks present it to prove they belong to the live
+	// provider; callbacks from a replaced boot carry a different one and are
+	// dropped. Empty on descriptors written before boot tracking; those
+	// providers' hooks are accepted for backward compatibility.
+	BootID string `json:"bootId,omitempty"`
+}
+
+// providerBootEnv carries the provider boot identity to hook subprocesses. It
+// deliberately reuses AO_RUNTIME_LAUNCH_ID: for terminal runtimes that variable
+// names the supervised launch, and for chat providers it names this boot. Both
+// mean "the provider process generation this hook belongs to"; the team-hook
+// fence compares it against the mode-appropriate durable fact (session launch
+// id for TUI, this descriptor for Chat). It must stay identical to
+// session_manager.EnvRuntimeLaunchID.
+const providerBootEnv = "AO_RUNTIME_LAUNCH_ID"
+
+// ReadBootID returns the provider boot recorded for sessionID, or "" when no
+// descriptor exists (no provider ever started, or one written before boot
+// tracking). Callers treat "" as unknown, never as a mismatch.
+func ReadBootID(dataDir, sessionID string) (string, error) {
+	d, err := readDescriptor(dataDir, sessionID)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return d.BootID, nil
+}
+
+// withProviderBootID returns env with providerBootEnv set to boot, replacing
+// any value the caller passed: the boot owner is authoritative.
+func withProviderBootID(env []string, bootID string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if !strings.HasPrefix(kv, providerBootEnv+"=") {
+			out = append(out, kv)
+		}
+	}
+	return append(out, providerBootEnv+"="+bootID)
 }
 
 // Config identifies one provider process and its AO session ownership.
@@ -669,9 +712,13 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	defer func() { _ = listener.Close() }()
 
+	bootID, err := randomToken()
+	if err != nil {
+		return err
+	}
 	child := aoprocess.Command(cfg.Argv[0], cfg.Argv[1:]...) //nolint:gosec // provider argv is constructed by AO's driver.
 	child.Dir = cfg.Workdir
-	child.Env = cfg.Env
+	child.Env = withProviderBootID(cfg.Env, bootID)
 	configureProviderProcess(child)
 	stdin, err := child.StdinPipe()
 	if err != nil {
@@ -701,6 +748,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Version: ProtocolVersion, SessionID: cfg.SessionID, Protocol: cfg.Protocol,
 		OwnershipFingerprint: cfg.OwnershipFingerprint,
 		Address:              listener.Addr().String(), Token: token, PID: os.Getpid(), StartedAt: time.Now().UTC(),
+		BootID:               bootID,
 	}
 	if err := writeDescriptor(cfg.DataDir, d); err != nil {
 		_ = killProviderProcess(context.WithoutCancel(ctx), child)

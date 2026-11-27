@@ -35,6 +35,15 @@
 
 One coding agent can handle a task. Running several means splitting the work, keeping branches from colliding, and following every change through CI, review, and merge. Orchestrator.inc is a local desktop workspace for that: every task gets its own agent, branch, and worktree, and your code stays on your machine.
 
+## Fork additions
+
+[Project teams](docs/team-workflow.md) adds project planners, editable org charts,
+mission chiefs, custom roles, orchestrator signoff, persistent Python mail, and llmwiki/datashard
+integration. Run `python scripts/team-desktop.py --build` once, then
+`python scripts/team-desktop.py` for the native Electron desktop app. On Windows,
+add `--shortcut` to create an Agent Teams desktop shortcut. See the guide for
+prerequisites and browser development mode.
+
 ## Features
 
 ### The orchestrator runs the fleet

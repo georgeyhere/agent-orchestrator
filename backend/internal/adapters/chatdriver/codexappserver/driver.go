@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	codexagent "github.com/aoagents/agent-orchestrator/backend/internal/adapters/agent/codex"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/persistenthost"
 	"github.com/aoagents/agent-orchestrator/backend/internal/adapters/chatdriver/processenv"
 	"github.com/aoagents/agent-orchestrator/backend/internal/agentlaunch"
@@ -323,7 +324,12 @@ func (d *Driver) Start(ctx context.Context, cfg ports.ChatStartConfig) (ports.Ch
 	// thread/start has no top-level effort field either; carry the durable AO
 	// choice as a config override like thread/resume does, so a fresh thread
 	// does not silently fall back to the provider default.
-	if config := threadConfig(cfg.Effort, cfg.MCPServers); len(config) > 0 {
+	config, err := teamThreadConfig(ctx, conv.conn, cfg.WorkspacePath, cfg.Env, threadConfig(cfg.Effort, cfg.MCPServers))
+	if err != nil {
+		_ = conv.Terminate()
+		return nil, err
+	}
+	if len(config) > 0 {
 		params["config"] = config
 	}
 	if cfg.SystemPrompt != "" {
@@ -406,7 +412,12 @@ func (d *Driver) Resume(ctx context.Context, cfg ports.ChatResumeConfig) (ports.
 	// thread/resume has no top-level effort field. Codex exposes persistent
 	// reasoning effort as a config override, so carry the durable AO choice into
 	// the resumed thread instead of silently falling back to the provider default.
-	if config := threadConfig(cfg.Effort, cfg.MCPServers); len(config) > 0 {
+	config, err := teamThreadConfig(ctx, conv.conn, cfg.WorkspacePath, cfg.Env, threadConfig(cfg.Effort, cfg.MCPServers))
+	if err != nil {
+		_ = conv.Terminate()
+		return nil, err
+	}
+	if len(config) > 0 {
 		params["config"] = config
 	}
 	// Developer instructions are launch context, not durable conversation
@@ -581,7 +592,7 @@ func (d *Driver) connectSession(
 		DataDir:       dataDir,
 		Workdir:       workdir,
 		Env:           envSlice(env),
-		Argv:          []string{bin, "app-server"},
+		Argv:          appServerArgv(bin, envSlice(env)),
 	}
 	if prepareEnv != nil {
 		hostConfig.Prepare = func(prepareCtx context.Context) (persistenthost.PreparedProvider, error) {
@@ -590,7 +601,7 @@ func (d *Driver) connectSession(
 				return persistenthost.PreparedProvider{}, prepareErr
 			}
 			return persistenthost.PreparedProvider{
-				Env: envSlice(preparedEnv), Argv: []string{bin, "app-server"},
+				Env: envSlice(preparedEnv), Argv: appServerArgv(bin, envSlice(preparedEnv)),
 			}, nil
 		}
 	}
@@ -729,8 +740,28 @@ func launchApprovalSettings(mode ports.PermissionMode, readOnly bool) (policy, s
 }
 
 // spawnAppServer is the real launcher.
+func appServerArgv(bin string, env []string) []string {
+	arguments := []string{bin, "app-server"}
+	managed, session := false, false
+	for _, item := range env {
+		if strings.HasPrefix(item, "AO_SESSION_ID=") && strings.TrimPrefix(item, "AO_SESSION_ID=") != "" {
+			session = true
+		}
+		if item == "AO_TEAM_MANAGED=1" {
+			managed = true
+		}
+	}
+	if managed && session {
+		executable, err := agentlaunch.Executable()
+		if err == nil {
+			arguments = append(arguments, codexagent.TeamHookArgs(executable)...)
+		}
+	}
+	return arguments
+}
+
 func spawnAppServer(ctx context.Context, bin, workdir string, env []string) (*process, error) {
-	args := []string{"app-server"}
+	args := appServerArgv(bin, env)[1:]
 	cmd := aoprocess.Command(bin, args...)
 	cmd.Dir = workdir
 	if len(env) > 0 {

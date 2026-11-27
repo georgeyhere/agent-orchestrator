@@ -11,6 +11,7 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
 import {
 	archiveExtraction,
 	createWorkDirectory,
@@ -134,7 +135,17 @@ try {
 	const extracted = join(workDir, basename(archiveName, `.${extension}`));
 	const nodeOut = join(outDir, "node");
 	if (!existsSync(extracted)) throw new Error(`Node archive did not contain ${extracted}`);
-	renameSync(extracted, nodeOut);
+	// Windows can retain a transient scanner/extractor handle after extraction.
+	// Retry only sharing/permission failures; preserve all other build errors.
+	for (let attempt = 0; ; attempt += 1) {
+		try {
+			renameSync(extracted, nodeOut);
+			break;
+		} catch (error) {
+			if (process.platform !== "win32" || !["EPERM", "EACCES", "EBUSY"].includes(error.code) || attempt >= 9) throw error;
+			await delay(250 * (attempt + 1));
+		}
+	}
 	// Only the runtime executable is needed; npm, headers, docs, and corepack are
 	// build/development tools and would add roughly 80 MB to every desktop update.
 	pruneNodeDistribution(nodeOut);

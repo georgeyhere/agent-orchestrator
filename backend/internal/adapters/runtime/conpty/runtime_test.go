@@ -478,7 +478,7 @@ func TestCreate_InvalidIDErrors(t *testing.T) {
 	rt := New(Options{Spawner: fakeSpawnerFor(t, nil, livePID())})
 	ctx := context.Background()
 
-	for _, bad := range []string{"", "has space", "has/slash", "has.dot"} {
+	for _, bad := range []string{"", "has space", "has/slash", `has\slash`, ".", "..", ".session", "session.", "session..1", "../session"} {
 		_, err := rt.Create(ctx, ports.RuntimeConfig{
 			SessionID:     domain.SessionID(bad),
 			WorkspacePath: "/tmp/w",
@@ -487,6 +487,21 @@ func TestCreate_InvalidIDErrors(t *testing.T) {
 		if err == nil {
 			t.Fatalf("Create(%q): expected error for invalid id, got nil", bad)
 		}
+	}
+}
+
+func TestCreate_DottedProjectSessionID(t *testing.T) {
+	isolateRegistry(t)
+	rt := New(Options{Spawner: fakeSpawnerFor(t, nil, livePID())})
+	id := domain.SessionID("litemoment_nx_2.0.5_win64-gpu-4")
+	handle, err := rt.Create(context.Background(), ports.RuntimeConfig{
+		SessionID: id, WorkspacePath: t.TempDir(), Argv: []string{"muse"},
+	})
+	if err != nil {
+		t.Fatalf("Create dotted project session: %v", err)
+	}
+	if handle.ID != string(id) {
+		t.Fatalf("handle = %q, want exact session ID %q", handle.ID, id)
 	}
 }
 
