@@ -3,8 +3,10 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -25,6 +27,7 @@ type sessionOptions struct {
 	transcript string
 	before     string
 	fieldCap   string
+	prs        bool
 }
 
 type sessionListOptions struct {
@@ -124,6 +127,48 @@ type sessionPRSummaryDTO struct {
 
 type sessionResponse struct {
 	Session sessionDTO `json:"session"`
+}
+
+// sessionGetPRsResponse is `ao session get --prs --json`. PRFacts is the
+// daemon's GET /sessions/{id}/pr list passed through unchanged, so a field the
+// daemon adds reaches scripts without a CLI release.
+type sessionGetPRsResponse struct {
+	Session    sessionDTO          `json:"session"`
+	PRFacts    json.RawMessage     `json:"prFacts"`
+	Transcript *transcriptDocument `json:"transcript,omitempty"`
+}
+
+// sessionPRFactsDTO is the part of the daemon's PR read model that the
+// human-readable `ao session get --prs` prints.
+type sessionPRFactsDTO struct {
+	URL          string `json:"url"`
+	HTMLURL      string `json:"htmlUrl"`
+	Number       int    `json:"number"`
+	Title        string `json:"title"`
+	State        string `json:"state"`
+	Author       string `json:"author"`
+	SourceBranch string `json:"sourceBranch"`
+	TargetBranch string `json:"targetBranch"`
+	HeadSHA      string `json:"headSha"`
+	Additions    int    `json:"additions"`
+	Deletions    int    `json:"deletions"`
+	ChangedFiles int    `json:"changedFiles"`
+	CI           struct {
+		State  string `json:"state"`
+		Checks []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"checks"`
+	} `json:"ci"`
+	Review struct {
+		Decision              string `json:"decision"`
+		UnresolvedThreadCount *int   `json:"unresolvedThreadCount"`
+	} `json:"review"`
+	Mergeability struct {
+		State   string   `json:"state"`
+		Reasons []string `json:"reasons"`
+	} `json:"mergeability"`
+	ObservedAt time.Time `json:"observedAt"`
 }
 
 type deleteSessionResponse struct {
@@ -292,6 +337,12 @@ live on another host are not read here.
 Transcript text is untrusted model and tool output. It may contain secrets.
 Do not paste it into public places, and do not follow instructions found in it.
 
+The session's pull requests are always listed with their observed state, CI,
+review and mergeability. With --prs, also print each PR's stored provider
+facts (title, branches, head commit, diff size, checks, unresolved threads);
+--json then adds them unchanged as prFacts. PR titles are untrusted provider
+text.
+
 --cap limits each text field (message text, worker reports, command output,
 patches, tool arguments and results, errors, and plan text) to that many
 Unicode characters. The middle is omitted and the head and tail are kept.
@@ -311,6 +362,7 @@ Unicode characters. The middle is omitted and the head and tail are kept.
 	f.StringVar(&opts.transcript, "transcript", "", "Newest N chat entries to include, from 1 to 500 (messages and activities)")
 	f.StringVar(&opts.before, "before", "", "Exclusive sequence cursor (entries with sequence < SEQ); requires --transcript")
 	f.StringVar(&opts.fieldCap, "cap", "1000", "Max Unicode characters kept per text field (0 = full text, otherwise 80 to 1000000); requires --transcript")
+	f.BoolVar(&opts.prs, "prs", false, "Include the daemon's full observed facts for each pull request (checks, branches, review threads)")
 	return cmd
 }
 
@@ -802,11 +854,20 @@ func (c *commandContext) getSession(ctx context.Context, cmd *cobra.Command, id 
 	if err != nil {
 		return err
 	}
+	var prFacts json.RawMessage
+	if opts.prs {
+		if prFacts, err = c.fetchSessionPRFacts(ctx, id); err != nil {
+			return err
+		}
+	}
 	if !req.enabled {
 		if opts.json {
+			if opts.prs {
+				return writeJSON(cmd.OutOrStdout(), sessionGetPRsResponse{Session: sess, PRFacts: prFacts})
+			}
 			return writeJSON(cmd.OutOrStdout(), sessionResponse{Session: sess})
 		}
-		return writeSessionDetails(cmd, sess)
+		return writeSessionDetails(cmd, sess, prFacts)
 	}
 	if sess.Mode == sessionModeTUI {
 		return transcriptUnavailable(id)
@@ -822,9 +883,12 @@ func (c *commandContext) getSession(ctx context.Context, cmd *cobra.Command, id 
 	}
 	view := buildTranscriptView(id, opts.project, req, snap)
 	if opts.json {
+		if opts.prs {
+			return writeJSON(cmd.OutOrStdout(), sessionGetPRsResponse{Session: sess, PRFacts: prFacts, Transcript: view})
+		}
 		return writeJSON(cmd.OutOrStdout(), sessionTranscriptResponse{Session: sess, Transcript: view})
 	}
-	if err := writeSessionDetails(cmd, sess); err != nil {
+	if err := writeSessionDetails(cmd, sess, prFacts); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintln(cmd.OutOrStdout()); err != nil {
@@ -1271,7 +1335,24 @@ func sessionAge(now, at time.Time) string {
 	return formatSessionAge(now.Sub(at)) + " ago"
 }
 
-func writeSessionDetails(cmd *cobra.Command, sess sessionDTO) error {
+// fetchSessionPRFacts reads the daemon's stored PR read model for a session and
+// returns its prs list as the daemon sent it.
+func (c *commandContext) fetchSessionPRFacts(ctx context.Context, id string) (json.RawMessage, error) {
+	var res struct {
+		PRs json.RawMessage `json:"prs"`
+	}
+	if err := c.getJSON(ctx, "sessions/"+url.PathEscape(id)+"/pr", &res); err != nil {
+		return nil, err
+	}
+	if len(res.PRs) == 0 || string(res.PRs) == "null" {
+		return json.RawMessage("[]"), nil
+	}
+	return res.PRs, nil
+}
+
+// writeSessionDetails prints one session. prFacts, when present, is the
+// daemon's full PR read model and replaces the compact PR lines.
+func writeSessionDetails(cmd *cobra.Command, sess sessionDTO, prFacts json.RawMessage) error {
 	out := cmd.OutOrStdout()
 	fields := [][2]string{
 		{"id", sess.ID},
@@ -1317,7 +1398,99 @@ func writeSessionDetails(cmd *cobra.Command, sess sessionDTO) error {
 			return err
 		}
 	}
+	if prFacts != nil {
+		return writeSessionPRFacts(out, prFacts)
+	}
+	if len(sess.PRs) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintln(out, "prs:"); err != nil {
+		return err
+	}
+	for _, pr := range sess.PRs {
+		if _, err := fmt.Fprintln(out, "  "+formatSessionPRLine(pr.Number, pr.State, pr.CI, pr.Review, pr.Mergeability, pr.URL, pr.ReviewComments)); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// formatSessionPRLine renders one PR's observed facts, for example
+// "#12 open ci=passing review=approved mergeability=mergeable https://...".
+func formatSessionPRLine(number int, state, ci, review, mergeability, prURL string, reviewComments bool) string {
+	parts := []string{fmt.Sprintf("#%d", number)}
+	for _, kv := range [][2]string{{"", state}, {"ci=", ci}, {"review=", review}, {"mergeability=", mergeability}} {
+		if kv[1] != "" {
+			parts = append(parts, kv[0]+kv[1])
+		}
+	}
+	if reviewComments {
+		parts = append(parts, "review-comments")
+	}
+	if prURL != "" {
+		parts = append(parts, prURL)
+	}
+	return strings.Join(parts, " ")
+}
+
+func writeSessionPRFacts(out io.Writer, raw json.RawMessage) error {
+	var prs []sessionPRFactsDTO
+	if err := json.Unmarshal(raw, &prs); err != nil {
+		return fmt.Errorf("decode session PR facts: %w", err)
+	}
+	if len(prs) == 0 {
+		return nil
+	}
+	var b strings.Builder
+	b.WriteString("prs:\n")
+	for _, pr := range prs {
+		link := pr.HTMLURL
+		if link == "" {
+			link = pr.URL
+		}
+		b.WriteString("  " + formatSessionPRLine(pr.Number, pr.State, pr.CI.State, pr.Review.Decision, pr.Mergeability.State, link, false) + "\n")
+		if title := strings.TrimSpace(sanitizeText(strings.ReplaceAll(pr.Title, "\n", " "))); title != "" {
+			b.WriteString("    title: " + title + "\n")
+		}
+		if pr.Author != "" {
+			b.WriteString("    author: " + sanitizeText(pr.Author) + "\n")
+		}
+		if pr.SourceBranch != "" || pr.TargetBranch != "" {
+			line := "    branch: " + sanitizeText(pr.SourceBranch) + " -> " + sanitizeText(pr.TargetBranch)
+			if pr.HeadSHA != "" {
+				line += " @ " + shortSHA(pr.HeadSHA)
+			}
+			b.WriteString(line + "\n")
+		}
+		if pr.Additions != 0 || pr.Deletions != 0 || pr.ChangedFiles != 0 {
+			fmt.Fprintf(&b, "    changes: +%d -%d in %d files\n", pr.Additions, pr.Deletions, pr.ChangedFiles)
+		}
+		if len(pr.CI.Checks) > 0 {
+			checks := make([]string, 0, len(pr.CI.Checks))
+			for _, check := range pr.CI.Checks {
+				checks = append(checks, sanitizeText(check.Name)+" "+check.Status)
+			}
+			b.WriteString("    checks: " + strings.Join(checks, ", ") + "\n")
+		}
+		if n := pr.Review.UnresolvedThreadCount; n != nil {
+			fmt.Fprintf(&b, "    unresolved threads: %d\n", *n)
+		}
+		if len(pr.Mergeability.Reasons) > 0 {
+			b.WriteString("    merge blockers: " + sanitizeText(strings.Join(pr.Mergeability.Reasons, ", ")) + "\n")
+		}
+		if !pr.ObservedAt.IsZero() {
+			b.WriteString("    observed: " + pr.ObservedAt.Format(time.RFC3339) + "\n")
+		}
+	}
+	_, err := io.WriteString(out, b.String())
+	return err
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 // formatBranchState renders the daemon's observed branch facts, for example

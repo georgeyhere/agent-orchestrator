@@ -286,12 +286,13 @@ surface (`npm run sqlc`, `npm run api`).
   when both `AO_TRACKER_INTAKE=on` and a project assignee rule enable it.
   It remains read-only toward issues: lifecycle-to-issue comments/transitions
   are not implemented.
-- **Full raw PR/tracker fact surfacing**: the SCM observer writes facts and the
-  desktop consumes concise PR summaries, but exposing the full raw `pr_*` /
-  `tracker_*` CDC events to live consumers
-  ([#110](https://github.com/Untrivial-ai/agent-orchestrator/issues/110)) and in
-  `ao session get` ([#111](https://github.com/Untrivial-ai/agent-orchestrator/issues/111))
-  is still open.
+- **Tracker fact surfacing**: `pr_created`, `pr_updated` and
+  `pr_check_recorded` events on `GET /api/v1/events` carry the stored PR and
+  check facts, and `ao session get` lists PR facts (`--prs` for the full
+  read model). Tracker intake stores no issue facts yet, so there are no
+  `tracker_*` CDC events to expose
+  ([#110](https://github.com/Untrivial-ai/agent-orchestrator/issues/110),
+  [#111](https://github.com/Untrivial-ai/agent-orchestrator/issues/111)).
 
 Tracking milestone:
 [`rewrite`](https://github.com/Untrivial-ai/agent-orchestrator/milestone/1).

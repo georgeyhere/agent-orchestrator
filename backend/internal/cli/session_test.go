@@ -1371,3 +1371,131 @@ func TestSessionClaimPRReview_RestoresSwitchesWhenTheClaimIsRefused(t *testing.T
 		t.Fatalf("requests=%#v want %#v", got, want)
 	}
 }
+
+func sessionPRFactsServer(t *testing.T) (*httptest.Server, *sessionRequestLog) {
+	t.Helper()
+	log := &sessionRequestLog{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.append(r)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/sessions/demo-1":
+			_, _ = io.WriteString(w, `{"session":{"id":"demo-1","projectId":"demo","kind":"worker","status":"ci_failed","prs":[`+
+				`{"url":"https://github.com/acme/app/pull/12","number":12,"state":"open","ci":"failing","review":"approved","mergeability":"blocked","reviewComments":true,"updatedAt":"2026-06-04T12:00:00Z"}]}}`)
+		case "/api/v1/sessions/demo-1/pr":
+			_, _ = io.WriteString(w, `{"prs":[{"url":"https://github.com/acme/app/pull/12","htmlUrl":"https://github.com/acme/app/pull/12","number":12,`+
+				`"title":"Add widget\n\u001b[31mred","state":"open","provider":"github","repo":"acme/app","author":"octo",`+
+				`"sourceBranch":"feat/widget","targetBranch":"main","headSha":"0123456789abcdef","additions":10,"deletions":2,"changedFiles":3,`+
+				`"ci":{"state":"failing","failingChecks":[],"checks":[{"name":"build","status":"failed"},{"name":"lint","status":"passed"}],"autoInjectCI":true},`+
+				`"review":{"decision":"approved","hasUnresolvedHumanComments":true,"unresolvedThreadCount":2,"unresolvedBy":[]},`+
+				`"mergeability":{"state":"blocked","reasons":["ci_failing"],"prUrl":"https://github.com/acme/app/pull/12"},`+
+				`"futureField":"kept","updatedAt":"2026-06-04T12:00:00Z","observedAt":"2026-06-04T12:01:00Z"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, log
+}
+
+func TestSessionGet_ListsPRFactsWithoutExtraRequest(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, log := sessionPRFactsServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "session", "get", "demo-1")
+	if err != nil {
+		t.Fatalf("session get failed: %v\nstderr=%s", err, errOut)
+	}
+	want := "prs:\n  #12 open ci=failing review=approved mergeability=blocked review-comments https://github.com/acme/app/pull/12\n"
+	if !strings.Contains(out, want) {
+		t.Fatalf("output missing PR facts %q:\n%s", want, out)
+	}
+	if got := log.all(); !reflect.DeepEqual(got, []string{"GET /api/v1/sessions/demo-1"}) {
+		t.Fatalf("requests = %#v, want only the session read", got)
+	}
+}
+
+func TestSessionGet_PRsFlagPrintsFullFacts(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, log := sessionPRFactsServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "session", "get", "demo-1", "--prs")
+	if err != nil {
+		t.Fatalf("session get --prs failed: %v\nstderr=%s", err, errOut)
+	}
+	for _, want := range []string{
+		"prs:\n  #12 open ci=failing review=approved mergeability=blocked https://github.com/acme/app/pull/12\n",
+		"    title: Add widget red\n",
+		"    author: octo\n",
+		"    branch: feat/widget -> main @ 0123456789ab\n",
+		"    changes: +10 -2 in 3 files\n",
+		"    checks: build failed, lint passed\n",
+		"    unresolved threads: 2\n",
+		"    merge blockers: ci_failing\n",
+		"    observed: 2026-06-04T12:01:00Z\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "#12 ") != 1 {
+		t.Fatalf("--prs should replace the compact PR line, not repeat it:\n%s", out)
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Fatalf("provider text must be sanitized:\n%q", out)
+	}
+	want := []string{"GET /api/v1/sessions/demo-1", "GET /api/v1/sessions/demo-1/pr"}
+	if got := log.all(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("requests = %#v, want %#v", got, want)
+	}
+}
+
+func TestSessionGet_PRsFlagJSONPassesDaemonFactsThrough(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv, _ := sessionPRFactsServer(t)
+	writeRunFileFor(t, cfg, srv)
+
+	out, errOut, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "session", "get", "demo-1", "--prs", "--json")
+	if err != nil {
+		t.Fatalf("session get --prs --json failed: %v\nstderr=%s", err, errOut)
+	}
+	var got struct {
+		Session sessionDTO       `json:"session"`
+		PRFacts []map[string]any `json:"prFacts"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, out)
+	}
+	if got.Session.ID != "demo-1" || len(got.Session.PRs) != 1 {
+		t.Fatalf("session = %#v", got.Session)
+	}
+	if len(got.PRFacts) != 1 || got.PRFacts[0]["headSha"] != "0123456789abcdef" || got.PRFacts[0]["futureField"] != "kept" {
+		t.Fatalf("prFacts = %#v, want the daemon facts unchanged", got.PRFacts)
+	}
+}
+
+func TestSessionGet_PRsFlagSurfacesDaemonError(t *testing.T) {
+	cfg := setConfigEnv(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/sessions/demo-1/pr" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":"internal","code":"PR_LIST_FAILED","message":"Could not list PRs","requestId":"req-9"}`)
+			return
+		}
+		if r.URL.Path == "/api/v1/sessions/demo-1" {
+			_, _ = io.WriteString(w, `{"session":{"id":"demo-1","projectId":"demo","kind":"worker","status":"working","prs":[]}}`)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	writeRunFileFor(t, cfg, srv)
+
+	_, _, err := executeCLI(t, Deps{ProcessAlive: func(int) bool { return true }}, "session", "get", "demo-1", "--prs")
+	if err == nil || !strings.Contains(err.Error(), "PR_LIST_FAILED") {
+		t.Fatalf("err = %v, want the daemon error envelope", err)
+	}
+}
