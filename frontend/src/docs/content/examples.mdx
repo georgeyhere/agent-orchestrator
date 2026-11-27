@@ -58,7 +58,7 @@ ao session claim-pr <session-id> 142
 
 The shorter form reads the current worker from `AO_SESSION_ID`.
 
-Orchestrator observes GitHub PRs or GitLab MRs and displays their normalized facts. A claim only attaches ownership metadata; it does not check out the PR branch. Prepare the correct branch separately before implementation.
+Orchestrator observes GitHub PRs or GitLab MRs and displays their normalized facts. In a single-repository project, the claim also switches a clean worktree to the PR branch at its verified head. If the claim output says the workspace is unchanged, prepare the branch yourself before implementation.
 
 ## Run a reviewer
 

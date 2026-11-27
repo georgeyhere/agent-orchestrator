@@ -152,7 +152,7 @@ Orchestrator chooses a project in this order: `--project`, `AO_PROJECT_ID`, the 
 
 Most lookup commands accept `--project` to disambiguate a session ID.
 
-Claiming a PR records ownership and starts observation. It does not check out the PR branch, so prepare the right branch or worktree separately. **Archive** ends the session. Exit and resume stop or start only its controller. Closing a view does neither.
+Claiming a PR records ownership and starts observation. In a single-repository project, the claim also switches a clean worktree to the PR branch at its verified head. If the claim output says the workspace is unchanged, prepare the branch yourself. **Archive** ends the session. Exit and resume stop or start only its controller. Closing a view does neither.
 
 ### `ao send`
 

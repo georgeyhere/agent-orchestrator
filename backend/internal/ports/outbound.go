@@ -558,6 +558,46 @@ type WorkspaceTaskNamer interface {
 	RevertTaskBranch(ctx context.Context, renamed, original WorkspaceProjectInfo) (WorkspaceProjectInfo, error)
 }
 
+// WorkspacePRCheckout is an optional Git capability that moves a session's
+// worktree onto a claimed pull request's head. It never discards work: a
+// dirty worktree, a detached HEAD that is not already the PR head, a local
+// branch that does not fast-forward to the head, a branch held by another
+// worktree, or a fetched head that differs from HeadSHA all leave the
+// worktree untouched and report a Skipped reason instead of an error.
+type WorkspacePRCheckout interface {
+	CheckoutPullRequest(ctx context.Context, req WorkspacePRCheckoutRequest) (WorkspacePRCheckoutResult, error)
+}
+
+// WorkspacePRCheckoutRequest names the PR head to fetch and where to put it.
+type WorkspacePRCheckoutRequest struct {
+	// Path is the session's managed worktree.
+	Path string
+	// Remote is the configured remote that hosts the PR's base repository.
+	Remote string
+	// HeadRef is the provider ref holding the PR head on Remote, for example
+	// refs/pull/7/head or refs/merge-requests/7/head. It also reaches fork heads.
+	HeadRef string
+	// HeadSHA is the provider-verified head commit. The checkout lands on
+	// exactly this commit or not at all.
+	HeadSHA string
+	// Branch is the local branch to switch to.
+	Branch string
+	// UpstreamBranch, when set, is the branch on Remote that Branch tracks so a
+	// plain push updates the PR. Empty for fork heads.
+	UpstreamBranch string
+}
+
+// WorkspacePRCheckoutResult reports what the checkout did.
+type WorkspacePRCheckoutResult struct {
+	// Changed is true when the worktree's branch or HEAD moved.
+	Changed bool
+	// Branch is the branch checked out afterwards.
+	Branch string
+	// Skipped explains why the worktree was left as it was. Empty when Changed
+	// or when the worktree was already on the PR head.
+	Skipped string
+}
+
 // WorkspaceConfig is the spec for creating or restoring a session's workspace.
 type WorkspaceConfig struct {
 	ProjectID domain.ProjectID

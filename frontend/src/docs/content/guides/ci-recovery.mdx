@@ -35,7 +35,7 @@ ao spawn --project my-project --name fix-pr-42 \
 
 Use `--no-takeover` if the operation should fail when another active session already owns the PR.
 
-Claiming records ownership, but does not check out the PR branch. Prepare the matching workspace before asking the worker to make a fix.
+Claiming records ownership and, in a single-repository project, the claim also switches a clean worktree to the PR branch at its verified head. If the claim output says the workspace is unchanged, prepare the branch yourself before asking the worker to make a fix.
 
 `ao report` sends a worker update to an existing orchestrator. It does not claim PR ownership.
 

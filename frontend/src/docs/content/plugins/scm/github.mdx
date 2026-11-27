@@ -20,7 +20,7 @@ Inside a worker, the one-argument form reads the target session from `AO_SESSION
 
 PR ownership prevents multiple active workers from silently driving the same pull request. Add `--no-takeover` when a conflicting owner must be treated as an error.
 
-A claim attaches ownership metadata and observation. It does not check out the pull request branch; prepare the correct branch/worktree separately before asking the agent to change it.
+A claim attaches ownership metadata and observation. In a single-repository project, the claim also switches a clean worktree to the PR branch at its verified head. If the claim output says the workspace is unchanged, prepare the branch yourself before asking the agent to change it.
 
 ## Observation and feedback
 
