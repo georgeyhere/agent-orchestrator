@@ -1,0 +1,98 @@
+# The worked example from the spec doc, as a complete brief.
+goal: API clients can authenticate with bearer tokens instead of session cookies.
+non_goals:
+  - Issuing or refreshing tokens
+  - Changing the session cookie format
+context:
+  - ref: docs/adr/0007-token-auth.md
+    reason: The decision record and the error shapes
+decisions:
+  - id: reuse-verify
+    choice: Reuse token.Verify unchanged
+    rationale: It already checks signature and expiry and is covered by tests.
+    rejected: [a second verifier in the middleware]
+  - id: error-code
+    choice: Every token failure returns 401 with code TOKEN_INVALID
+    rationale: Clients branch on one code; detail stays in server logs.
+interfaces:
+  - name: token.Verify
+    definition: "func Verify(raw string) (Claims, error)"
+constraints:
+  - No new dependencies
+risks:
+  - risk: Verify cannot tell expiry from a bad signature
+    signal: The expired-token test needs a different error code
+    response: Escalate; do not change token.go
+acceptance:
+  - kind: run
+    name: auth tests
+    command: go test ./internal/auth/...
+    expect: {exit: 0}
+  - kind: pr_ci
+    require: green
+tasks:
+  - id: token-parser
+    title: Parse and validate bearer tokens in auth middleware
+    outcome: Requests with a valid bearer token reach handlers with Principal set; expired or malformed tokens get 401 with error code TOKEN_INVALID.
+    read_first:
+      - path: internal/auth/middleware.go
+        symbol: Authenticate
+        why: The current cookie path you will extend
+      - path: internal/auth/token.go
+        why: Verify() already exists; reuse it
+      - path: docs/adr/0007-token-auth.md
+        why: Decision and error shapes
+    owns: [internal/auth/middleware.go, internal/auth/middleware_test.go]
+    steps:
+      - In Authenticate, read the Authorization header before the cookie branch.
+      - If it starts with "Bearer ", call token.Verify(raw) and set ctx Principal on success.
+      - On Verify error, write 401 with {"code":"TOKEN_INVALID"} via httperr.Write.
+      - Leave the cookie branch unchanged (task cookie-removal deletes it).
+      - Add table tests for valid, expired, malformed, and a missing header that falls through to the cookie.
+    interfaces:
+      - name: token.Verify
+        definition: "func Verify(raw string) (Claims, error)"
+    examples:
+      - given: "Authorization: Bearer <expired token>"
+        expect: '401 {"code":"TOKEN_INVALID"}'
+    do_not: [edit token.go, remove cookie support, add dependencies]
+    checks:
+      - kind: run
+        command: go test ./internal/auth/...
+        expect: {exit: 0}
+    evidence: [run, commit]
+    escalate_if:
+      - Verify() cannot express expiry distinctly from bad signature
+      - Any change needed outside owns
+    budget: {turns: 25}
+    decisions: [reuse-verify, error-code]
+  - id: cookie-removal
+    title: Remove the session cookie branch from auth middleware
+    outcome: Authenticate accepts only bearer tokens; a request with only a cookie gets 401 TOKEN_INVALID.
+    read_first:
+      - path: internal/auth/middleware.go
+        symbol: Authenticate
+        why: The cookie branch to delete
+    owns: [internal/auth/middleware.go, internal/auth/middleware_test.go]
+    steps:
+      - Delete the cookie branch in Authenticate.
+      - Delete the cookie helper readSessionCookie.
+      - Change the missing-header test to expect 401 TOKEN_INVALID.
+      - Delete the cookie-only tests.
+      - Run the auth tests.
+    do_not: [edit token.go]
+    checks:
+      - kind: run
+        command: go test ./internal/auth/...
+        expect: {exit: 0}
+    evidence: [run, commit, pr]
+    escalate_if:
+      - Another package calls readSessionCookie
+    budget: {turns: 15, wall_minutes: 30}
+    depends_on: [token-parser]
+staffing:
+  supervisor: chief-auth
+  workers: [worker-1]
+  tiers:
+    planner: strong
+    worker: cheap
