@@ -57,7 +57,7 @@ func CLIActorType(actorType, commandPath string) string {
 		return "user"
 	}
 	switch normalized {
-	case "ao hooks", "ao report", "ao artifact", "ao artifact add":
+	case "ao hooks", "ao team hook", "ao report", "ao artifact", "ao artifact add":
 		return "agent"
 	}
 	return "system"
@@ -205,6 +205,12 @@ var legacyActorlessUserCLICommands = map[string]struct{}{
 	"ao session restore":      {},
 	"ao spawn":                {},
 	"ao stop":                 {},
+	"ao team":                 {},
+	"ao team act":             {},
+	"ao team enable":          {},
+	"ao team export":          {},
+	"ao team inbox":           {},
+	"ao team status":          {},
 	"ao version":              {},
 
 	// Legacy commands observed in PostHog's current billing-period data.
